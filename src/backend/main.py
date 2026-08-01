@@ -2,10 +2,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from .engine.spatial import analyze_space
+from .database.db import create_tables
+from .database.db import insert_element
 
 # FastAPIアプリ作成
 app = FastAPI()
-
+create_tables()
 
 # ==============================
 # CORS設定
@@ -65,3 +67,43 @@ def analyze(data: AnalyzeRequest):
     )
 
     return result
+
+@app.post("/bim/import_test")
+def import_test():
+
+
+    insert_element(
+
+        "wall001",
+
+        "Wall",
+
+        "外壁",
+
+        '{"width":200,"height":3000}',
+
+        '{"x":0,"y":0}'
+
+    )
+
+
+    insert_element(
+
+        "door001",
+
+        "Door",
+
+        "玄関扉",
+
+        '{"width":900,"height":2100}',
+
+        '{"x":500,"y":0}'
+
+    )
+
+
+    return {
+
+        "status":"BIM data imported"
+
+    }
