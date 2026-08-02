@@ -1,17 +1,15 @@
-from src.backend.graph.builder import build_graph
+from backend.graph.builder import build_graph
 
-graph = build_graph()
 
-print("===== Graph Information =====")
-print("Nodes :", graph.number_of_nodes())
-print("Edges :", graph.number_of_edges())
+def test_build_graph_creates_a_node_per_element(sample_elements):
+    graph = build_graph()
 
-print("\n===== Node List =====")
+    assert graph.number_of_nodes() == 4
+    assert set(graph.nodes) == {"wall001", "door001", "room001", "room002"}
 
-for node, data in graph.nodes(data=True):
-    print(node, data)
 
-print("\n===== Edge List =====")
+def test_build_graph_stores_element_attributes(sample_elements):
+    graph = build_graph()
 
-for edge in graph.edges():
-    print(edge)
+    assert graph.nodes["wall001"]["type"] == "Wall"
+    assert graph.nodes["wall001"]["name"] == "間仕切壁"
