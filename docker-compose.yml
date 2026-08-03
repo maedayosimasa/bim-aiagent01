@@ -1,0 +1,83 @@
+services:
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: bim_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
+
+
+  # PC側(Archicad実行マシン)で稼働しているArchicad MCPサーバーへの
+  # ブリッジ。tailnet上のPCとWireGuardトンネルで直結し、backendコンテナは
+  # このコンテナのネットワーク名前空間を共有する(下のnetwork_mode参照)。
+  # ポート開放・固定IP・VPN機器は一切不要。
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: bim_tailscale
+    hostname: bim-backend
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    # backendがnetwork_mode: service:tailscale で名前空間を共有するため、
+    # ホスト向けのポート公開はbackendではなくここで行う。
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+
+  backend:
+    build:
+      context: ./backend
+    container_name: bim_backend
+    network_mode: service:tailscale
+    volumes:
+      - ./backend:/app
+      # ChromaDBのデフォルト埋め込み(ONNX all-MiniLM-L6-v2, 約80MB)は
+      # backendコンテナ自身が初回インデックス時にダウンロードする
+      # (embedding計算は常にクライアント側=backendで行われ、chromadb
+      # サーバーはベクトルの保存/検索のみを担う)。このボリュームが無いと
+      # コンテナを作り直すたびに毎回再ダウンロードすることになる。
+      - onnx_model_cache:/root/.cache/chroma
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      # "onnx"(既定): 意味検索。初回のみモデルDLが必要。
+      # "keyword": 依存ゼロのキーワード一致フォールバック(オフライン時用)。
+      - CHROMA_EMBEDDING_BACKEND=onnx
+      # PC側ブリッジ(stdio->HTTPプロキシ)をTailscale越しに指すURL。
+      # 例: https://pc-archicad.tailnet-xxxx.ts.net/mcp
+      # 未設定の場合、Archicad連携ツール(list_archicad_tools等)は
+      # クラッシュせずエラーを返すだけになる。
+      - ARCHICAD_MCP_URL=${ARCHICAD_MCP_URL:-}
+    depends_on:
+      - chromadb
+      - tailscale
+
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: bim_chroma
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./chroma/data:/chroma/chroma
+
+
+volumes:
+  onnx_model_cache:
+  tailscale_state:

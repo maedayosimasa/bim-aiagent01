@@ -1,0 +1,112 @@
+:root {
+  --text: #6b5a3a;
+  --text-h: #2b2013;
+  --bg: #faf5e6;
+  --border: #e2d3a0;
+  --code-bg: #f1e6c4;
+  --accent: #b8860b;
+  --accent-soft: #e0b94a;
+  --accent-bg: rgba(184, 134, 11, 0.12);
+  --accent-border: rgba(184, 134, 11, 0.5);
+  --on-accent: #2b2013;
+  --social-bg: rgba(241, 230, 196, 0.6);
+  --shadow:
+    rgba(120, 90, 20, 0.16) 0 10px 15px -3px, rgba(120, 90, 20, 0.08) 0 4px 6px -2px;
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: Georgia, 'Times New Roman', 'Hiragino Mincho ProN', 'Yu Mincho', var(--sans);
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 18px/145% var(--sans);
+  letter-spacing: 0.18px;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  @media (max-width: 1024px) {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #cbbf9e;
+    --text-h: #f3e3b0;
+    --bg: #100d08;
+    --border: #4a3f24;
+    --code-bg: #1c160c;
+    --accent: #d4af37;
+    --accent-soft: #f5d67d;
+    --accent-bg: rgba(212, 175, 55, 0.16);
+    --accent-border: rgba(212, 175, 55, 0.55);
+    --on-accent: #241c08;
+    --social-bg: rgba(74, 63, 36, 0.5);
+    --shadow:
+      rgba(0, 0, 0, 0.5) 0 10px 15px -3px, rgba(0, 0, 0, 0.3) 0 4px 6px -2px;
+  }
+}
+
+#root {
+  width: 1126px;
+  max-width: 100%;
+  margin: 0 auto;
+  text-align: center;
+  border-inline: 1px solid var(--border);
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2 {
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+h1 {
+  font-family: var(--heading);
+  font-size: 56px;
+  letter-spacing: -1.68px;
+  margin: 32px 0;
+  background: linear-gradient(135deg, var(--accent-soft), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  @media (max-width: 1024px) {
+    font-size: 36px;
+    margin: 20px 0;
+  }
+}
+h2 {
+  font-family: var(--sans);
+  font-size: 24px;
+  line-height: 118%;
+  letter-spacing: -0.24px;
+  margin: 0 0 8px;
+  @media (max-width: 1024px) {
+    font-size: 20px;
+  }
+}
+p {
+  margin: 0;
+}
+
+code {
+  font-family: var(--mono);
+  display: inline-flex;
+  border-radius: 4px;
+  color: var(--text-h);
+  font-size: 15px;
+  line-height: 135%;
+  padding: 4px 8px;
+  background: var(--code-bg);
+}

@@ -1,0 +1,130 @@
+import pytest
+
+from backend.engine import vector_store
+from backend.engine.relation_builder import rebuild_connections
+from backend.engine.vector_store import (
+    KeywordEmbeddingFunction,
+    index_elements,
+    search_elements,
+    _describe_element,
+)
+
+
+def test_describe_element_includes_relations():
+    element = {"guid": "room001", "type": "Room", "name": "居室A"}
+    relations = [
+        {"source_guid": "room001", "target_guid": "room002", "relation": "adjacent"},
+        {"source_guid": "door001", "target_guid": "room001", "relation": "connects"},
+    ]
+
+    text = _describe_element(element, relations)
+
+    assert text == "居室A Room room002 隣接 door001 接続"
+
+
+def test_index_elements_upserts_one_document_per_element(
+    sample_elements, chroma_client, fake_embedding_function
+):
+    rebuild_connections()
+
+    count = index_elements(client=chroma_client, embedding_function=fake_embedding_function)
+
+    assert count == 4
+
+    collection = chroma_client.get_or_create_collection(
+        "bim_elements", embedding_function=fake_embedding_function
+    )
+    assert collection.count() == 4
+
+    stored = collection.get(ids=["room001"])
+    assert "居室A" in stored["documents"][0]
+    assert "隣接" in stored["documents"][0]
+
+
+def test_index_elements_with_no_data_returns_zero(test_db, chroma_client, fake_embedding_function):
+    count = index_elements(client=chroma_client, embedding_function=fake_embedding_function)
+
+    assert count == 0
+
+
+def test_search_elements_finds_relevant_element_by_text(
+    sample_elements, chroma_client, fake_embedding_function
+):
+    rebuild_connections()
+    index_elements(client=chroma_client, embedding_function=fake_embedding_function)
+
+    # "居室ドア" is door001's distinctive name and doesn't appear in any
+    # other element's description, so the match is unambiguous regardless
+    # of the fake embedding's hash-bucket seed.
+    hits = search_elements(
+        "居室ドア",
+        n_results=1,
+        client=chroma_client,
+        embedding_function=fake_embedding_function,
+    )
+
+    assert len(hits) == 1
+    assert hits[0]["guid"] == "door001"
+    assert hits[0]["type"] == "Door"
+
+
+def test_search_elements_on_empty_collection_returns_no_hits(
+    test_db, chroma_client, fake_embedding_function
+):
+    hits = search_elements(
+        "何もない", client=chroma_client, embedding_function=fake_embedding_function
+    )
+
+    assert hits == []
+
+
+def test_default_embedding_function_defaults_to_onnx(monkeypatch):
+    # None means "let chromadb use its own built-in ONNX model" - see
+    # get_collection()'s handling of the None sentinel.
+    monkeypatch.delenv("CHROMA_EMBEDDING_BACKEND", raising=False)
+
+    assert vector_store._default_embedding_function() is None
+
+
+def test_default_embedding_function_keyword_backend(monkeypatch):
+    monkeypatch.setenv("CHROMA_EMBEDDING_BACKEND", "keyword")
+
+    ef = vector_store._default_embedding_function()
+
+    assert isinstance(ef, KeywordEmbeddingFunction)
+
+
+def test_default_embedding_function_unknown_backend_raises(monkeypatch):
+    monkeypatch.setenv("CHROMA_EMBEDDING_BACKEND", "bogus")
+
+    with pytest.raises(ValueError):
+        vector_store._default_embedding_function()
+
+
+def test_keyword_embedding_function_is_deterministic_across_instances():
+    # Uses zlib.crc32 (not the randomized builtin hash()) specifically so
+    # this holds across separate processes/restarts, not just within one.
+    ef1 = KeywordEmbeddingFunction()
+    ef2 = KeywordEmbeddingFunction()
+
+    assert ef1(["居室A Room room002 隣接"]) == ef2(["居室A Room room002 隣接"])
+
+
+def test_keyword_embedding_function_end_to_end_search(sample_elements, chroma_client):
+    # Exercises the real fallback (no fake embedding fixture) since it
+    # has no external dependency or download to worry about.
+    rebuild_connections()
+    keyword_ef = KeywordEmbeddingFunction()
+
+    count = index_elements(client=chroma_client, embedding_function=keyword_ef)
+    assert count == 4
+
+    hits = search_elements(
+        "居室ドア",
+        n_results=1,
+        client=chroma_client,
+        embedding_function=keyword_ef,
+    )
+
+    assert len(hits) == 1
+    assert hits[0]["guid"] == "door001"

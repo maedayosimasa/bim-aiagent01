@@ -1,0 +1,23 @@
+.env
+
+# docker-composeのボリュームマウント先(ランタイムデータ、ソースではない)
+/chroma/
+/sqlite/
+/data/
+
+# 個人環境向けのローカル設定(チーム共有しない)
+/.claude/settings.local.json
+
+# backend (Python/uv)
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/*.db
+backend/src/**/*.egg-info/
+
+# frontend (Node/Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
