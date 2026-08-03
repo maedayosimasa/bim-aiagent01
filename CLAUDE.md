@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 BIM空間知能エンジン(bim_aiagent) — Archicadと連携し、BIM要素(壁・部屋・ドア・窓など)の空間関係をグラフ化し、意味検索・空間解析を行うAIエージェントを開発するプロジェクト。将来的にはAIによる解析結果を蓄積・活用するエージェント基盤を目指す。
 
-`backend/`と`frontend/`はそれぞれ独立したgitリポジトリ(リポジトリルート自体は無git)。
+`backend/`と`frontend/`を含むリポジトリルート全体を単一のgitリポジトリとして管理する。
 
 ## コマンド
 
