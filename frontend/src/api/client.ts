@@ -69,6 +69,34 @@ export type AnalyzeResult = {
   issues: unknown[];
 };
 
+// engine/graphの計算結果をSQLiteに保存したもの(再計算のたびに全削除→
+// 書き込み直す方式、履歴は積まない)を開発時に検証するための型。
+export type EngineAnalysisSnapshot = {
+  id: number;
+  model_id: string;
+  computed_at: string;
+  node_count: number;
+  edge_count: number;
+  connected: boolean;
+  wall_count: number;
+  door_count: number;
+  window_count: number;
+  room_count: number;
+  issues: unknown[];
+  graph_data: GraphData;
+} | null;
+
+export type GraphRelationResult = {
+  id: number;
+  computed_at: string;
+  source_guid: string;
+  source_type: string | null;
+  target_guid: string;
+  target_type: string | null;
+  relation: string;
+  distance: number;
+};
+
 export type SearchHit = {
   guid: string;
   document: string;
@@ -119,6 +147,14 @@ export function importTestData() {
 
 export function rebuildRelations() {
   return post<{ status: string; count: number }>("/bim/rebuild_relations");
+}
+
+export function getEngineAnalysisSnapshot() {
+  return get<EngineAnalysisSnapshot>("/engine/analysis_snapshot");
+}
+
+export function getGraphRelationSnapshot() {
+  return get<GraphRelationResult[]>("/graph/relation_snapshot");
 }
 
 export function indexElements() {
@@ -187,4 +223,11 @@ export function moveArchicadElement(
 
 export function deleteArchicadElements(guids: string[]) {
   return post<unknown>("/archicad/elements/delete", { guids });
+}
+
+// フロントエンドでの選択とArchicad本体の選択+ハイライトを連動させる。
+// guidsを空配列で呼ぶと選択/ハイライトを解除する。
+// (カメラ移動には対応していない - Tapirにその機能がないため)
+export function focusArchicadElements(guids: string[]) {
+  return post<unknown>("/archicad/elements/focus", { guids });
 }

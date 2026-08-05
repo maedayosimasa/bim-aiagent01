@@ -1,4 +1,7 @@
-from ..database.db import get_elements
+import json
+from datetime import datetime, timezone
+
+from ..database.db import get_elements, save_engine_analysis_result
 from ..graph.builder import build_graph
 from ..graph.topology import build_topology
 from ..graph.analyzer import analyze_graph
@@ -39,7 +42,9 @@ def analyze_space(model_id: str):
         elif element_type == "Window":
             windows.append(element)
 
-        elif element_type == "Room":
+        elif element_type in ("Room", "Zone"):
+            # Archicadの実データは部屋を"Room"ではなく"Zone"と呼ぶ
+            # (archicad_mcp/tapir.pyのモジュールdocstring参照)。
             rooms.append(element)
 
     # 解析結果
@@ -69,5 +74,22 @@ def analyze_space(model_id: str):
         "issues": []
 
     }
+
+    # 開発時に検証できるよう、この解析結果一式をSQLiteへ保存する。
+    # 履歴は積まず、再計算のたびに全削除→1行だけ書き込みで置き換える
+    # (sync_from_archicad/rebuild_connectionsと同じ方式)。
+    save_engine_analysis_result(
+        model_id=model_id,
+        computed_at=datetime.now(timezone.utc).isoformat(),
+        node_count=graph_info["nodes"],
+        edge_count=graph_info["edges"],
+        connected=graph_info["connected"],
+        wall_count=len(walls),
+        door_count=len(doors),
+        window_count=len(windows),
+        room_count=len(rooms),
+        issues=json.dumps(result["issues"]),
+        graph_data=json.dumps(graph_json),
+    )
 
     return result

@@ -97,6 +97,26 @@ def _make_fake_tapir_server():
             ]
         }
 
+    @server.tool(name="GetSelectedElements")
+    def get_selected_elements(input) -> dict:
+        return {"elements": [{"elementId": {"guid": "guid-1"}}]}
+
+    @server.tool(name="ChangeSelectionOfElements")
+    def change_selection_of_elements(input) -> dict:
+        payload = input or {}
+        return {
+            "executionResultsOfAddToSelection": [
+                {"success": True} for _ in payload.get("addElementsToSelection", [])
+            ],
+            "executionResultsOfRemoveFromSelection": [
+                {"success": True} for _ in payload.get("removeElementsFromSelection", [])
+            ],
+        }
+
+    @server.tool(name="HighlightElements")
+    def highlight_elements(input) -> dict:
+        return {"success": True}
+
     @server.tool(name="MoveElements")
     def move_elements(input) -> dict:
         return {"executionResults": [{"success": True}]}
@@ -192,6 +212,57 @@ def test_get_bounding_boxes_and_geometry_conversion():
         "type": "polygon",
         "points": [[0, 0], [1000, 0], [1000, 200], [0, 200]],
     }
+
+
+def test_get_selected_element_guids():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    guids = _run(tapir.get_selected_element_guids(transport=transport))
+
+    assert guids == ["guid-1"]
+
+
+def test_select_elements_removes_current_then_adds_new():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    result = _run(tapir.select_elements(["guid-2"], transport=transport))
+
+    assert result["executionResultsOfRemoveFromSelection"] == [{"success": True}]
+    assert result["executionResultsOfAddToSelection"] == [{"success": True}]
+
+
+def test_select_elements_empty_only_clears_current_selection():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    result = _run(tapir.select_elements([], transport=transport))
+
+    assert result["executionResultsOfRemoveFromSelection"] == [{"success": True}]
+    assert result["executionResultsOfAddToSelection"] == []
+
+
+def test_highlight_elements():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    result = _run(tapir.highlight_elements(["guid-1"], transport=transport))
+
+    assert result["success"] is True
+
+
+def test_highlight_elements_empty_clears_highlight():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    result = _run(tapir.highlight_elements([], transport=transport))
+
+    assert result["success"] is True
+
+
+def test_focus_elements_selects_and_highlights():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    result = _run(tapir.focus_elements(["guid-2"], transport=transport))
+
+    assert result["selection"]["executionResultsOfAddToSelection"] == [{"success": True}]
+    assert result["highlight"]["success"] is True
 
 
 def test_move_element():

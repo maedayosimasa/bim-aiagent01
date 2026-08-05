@@ -1,3 +1,5 @@
+import json
+
 from backend.graph.builder import build_graph
 from backend.graph.room import find_rooms
 from backend.graph.search import find_nodes_by_type
@@ -7,6 +9,20 @@ def test_find_rooms(sample_elements):
     graph = build_graph()
 
     assert set(find_rooms(graph)) == {"room001", "room002"}
+
+
+def test_find_rooms_includes_zone_type(test_db):
+    # Archicadの実データは部屋を"Room"ではなく"Zone"と呼ぶため、
+    # find_roomsは両方を部屋として扱わなければならない。
+    test_db.insert_element(
+        "zone001", "Zone", "ゾーンA",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [1000, 0], [1000, 1000], [0, 1000]]}),
+    )
+
+    graph = build_graph()
+
+    assert set(find_rooms(graph)) == {"zone001"}
 
 
 def test_find_nodes_by_type(sample_elements):

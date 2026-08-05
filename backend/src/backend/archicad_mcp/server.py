@@ -35,6 +35,36 @@ def list_elements() -> list[dict]:
     return [_element_to_dict(row) for row in db.get_elements()]
 
 
+def _engine_analysis_result_to_dict(row):
+    if row is None:
+        return None
+    result = dict(row)
+    result["connected"] = bool(result["connected"])
+    result["issues"] = json.loads(result["issues"]) if result["issues"] else []
+    result["graph_data"] = json.loads(result["graph_data"]) if result["graph_data"] else {}
+    return result
+
+
+@mcp_server.tool()
+def get_engine_analysis_snapshot() -> dict | None:
+    """最後に保存されたengine側の解析結果スナップショットを返す(検証用)。
+
+    analyze_bim_space()を呼ぶたびに全削除→1行だけ書き込みで置き換わる
+    (履歴は積まない)。まだ一度も解析していなければNone。
+    """
+    return _engine_analysis_result_to_dict(db.get_engine_analysis_result())
+
+
+@mcp_server.tool()
+def get_graph_relation_snapshot() -> list[dict]:
+    """最後に保存されたgraph側の関係計算結果一式を返す(検証用)。
+
+    rebuild_relations()(analyze_bim_space()内部からも呼ばれる)のたびに
+    全削除→まとめて書き込みで置き換わる(履歴は積まない)。
+    """
+    return [dict(row) for row in db.get_graph_relation_results()]
+
+
 @mcp_server.tool()
 def search_bim_elements(query: str, n_results: int = 5) -> list[dict]:
     """自然文クエリでBIM要素を意味検索する。"""
@@ -189,6 +219,16 @@ async def set_archicad_property_value(
 ) -> dict:
     """Archicad本体の要素プロパティ値を実際に書き換える(破壊的操作)。"""
     return await tapir.set_property_value(guid, property_guid, value)
+
+
+@mcp_server.tool()
+async def focus_archicad_elements(guids: list[str]) -> dict:
+    """Archicad本体で指定要素を選択+ハイライトする(guidsが空なら解除)。
+
+    Tapirにはカメラを要素まで移動させるコマンドがないため、実際に画面を
+    スクロールするのはユーザー操作に委ねる(選択+ハイライトまでを行う)。
+    """
+    return await tapir.focus_elements(guids)
 
 
 @mcp_server.tool()

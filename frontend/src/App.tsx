@@ -5,12 +5,16 @@ import ElementsTab from "./tabs/ElementsTab";
 import SearchTab from "./tabs/SearchTab";
 import GraphTab from "./tabs/GraphTab";
 import PropertiesTab from "./tabs/PropertiesTab";
+import SpaceViewer3D from "./tabs/SpaceViewer3D";
+import AnalysisSnapshotTab from "./tabs/AnalysisSnapshotTab";
 
 const TABS = [
   { key: "dashboard", label: "ダッシュボード", Component: Dashboard },
   { key: "elements", label: "要素同期", Component: ElementsTab },
   { key: "search", label: "意味検索", Component: SearchTab },
   { key: "graph", label: "空間関係グラフ", Component: GraphTab },
+  { key: "viewer3d", label: "3Dビュー", Component: SpaceViewer3D },
+  { key: "analysis-db", label: "解析結果DB", Component: AnalysisSnapshotTab },
   { key: "properties", label: "プロパティ編集", Component: PropertiesTab },
 ] as const;
 

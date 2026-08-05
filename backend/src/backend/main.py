@@ -19,6 +19,9 @@ from .archicad_mcp.server import (
     set_archicad_property_value,
     move_archicad_element,
     delete_archicad_elements,
+    focus_archicad_elements,
+    get_engine_analysis_snapshot,
+    get_graph_relation_snapshot,
 )
 from .archicad_mcp import client as archicad_client
 
@@ -116,6 +119,10 @@ class MoveElementRequest(BaseModel):
 
 
 class DeleteArchicadElementsRequest(BaseModel):
+    guids: list[str]
+
+
+class FocusArchicadElementsRequest(BaseModel):
     guids: list[str]
 
 
@@ -229,6 +236,24 @@ def rebuild_relations():
         "status": "relations rebuilt",
         "count": len(relations)
     }
+
+
+# ==============================
+# Analysis Verification API
+# engine/graphが計算した結果をSQLiteに保存したもの(再計算のたびに全削除
+# →書き込み直す方式)をそのまま返す、開発時の検証用エンドポイント。
+# ==============================
+
+@app.get("/engine/analysis_snapshot")
+def engine_analysis_snapshot():
+
+    return get_engine_analysis_snapshot()
+
+
+@app.get("/graph/relation_snapshot")
+def graph_relation_snapshot():
+
+    return get_graph_relation_snapshot()
 
 
 # ==============================
@@ -363,3 +388,11 @@ async def archicad_move_element(data: MoveElementRequest):
 async def archicad_delete_elements(data: DeleteArchicadElementsRequest):
 
     return await _run_archicad_action(delete_archicad_elements(data.guids))
+
+
+@app.post("/archicad/elements/focus")
+async def archicad_focus_elements(data: FocusArchicadElementsRequest):
+    # フロントエンドで要素を選択した際、Archicad本体側でも同じ要素を
+    # 選択+ハイライトする(guidsが空なら解除)。カメラ移動は未対応。
+
+    return await _run_archicad_action(focus_archicad_elements(data.guids))

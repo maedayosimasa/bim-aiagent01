@@ -102,6 +102,72 @@ async def get_bounding_boxes(guids, transport=None):
     return payload.get("boundingBoxes3D", [])
 
 
+async def get_selected_element_guids(transport=None):
+    payload = await _call("GetSelectedElements", transport=transport)
+    return [item["elementId"]["guid"] for item in payload.get("elements", [])]
+
+
+async def select_elements(guids, transport=None):
+    """Archicad本体の選択状態を指定guid群に置き換える(既存選択は解除)。
+
+    TapirにはChangeSelectionOfElements(追加/削除)しかなく、絶対指定の
+    「これに置き換える」コマンドはない。そのため現在の選択をまず取得し、
+    それを丸ごとremoveElementsFromSelectionしつつ、新しい選択をaddする。
+    guidsが空なら選択解除のみになる。
+    """
+    current = await get_selected_element_guids(transport=transport)
+
+    arguments = {}
+    if current:
+        arguments["removeElementsFromSelection"] = _element_ids(current)
+    if guids:
+        arguments["addElementsToSelection"] = _element_ids(guids)
+
+    if not arguments:
+        return {"executionResultsOfAddToSelection": [], "executionResultsOfRemoveFromSelection": []}
+
+    return await _call("ChangeSelectionOfElements", arguments, transport=transport)
+
+
+# フロントエンドでクリックされた要素をArchicad本体側で目立たせるための色。
+# 選択中の要素は明るいオレンジ、それ以外は薄いグレーに沈める。
+_FOCUS_COLOR = [255, 122, 24, 255]
+_DIMMED_COLOR = [200, 200, 200, 90]
+
+
+async def highlight_elements(guids, transport=None):
+    """指定要素をArchicad本体でハイライトする。guidsが空なら全ハイライト解除。
+
+    Tapirにはカメラ/ビューを要素へ移動させるコマンドが存在しない(2026-08-04
+    時点でArchicad MCPブリッジのツール一覧を確認済み)。そのためこの関数は
+    「選択+ハイライト」までを行い、実際に画面をその要素までスクロール/
+    ズームするのはユーザー側の操作に委ねる。
+    """
+    if not guids:
+        return await _call(
+            "HighlightElements",
+            {"elements": [], "highlightedColors": []},
+            transport=transport,
+        )
+
+    return await _call(
+        "HighlightElements",
+        {
+            "elements": _element_ids(guids),
+            "highlightedColors": [_FOCUS_COLOR for _ in guids],
+            "nonHighlightedColor": _DIMMED_COLOR,
+        },
+        transport=transport,
+    )
+
+
+async def focus_elements(guids, transport=None):
+    """選択+ハイライトをまとめて行う(フロントエンドの1クリックに対応する単位)。"""
+    selection_result = await select_elements(guids, transport=transport)
+    highlight_result = await highlight_elements(guids, transport=transport)
+    return {"selection": selection_result, "highlight": highlight_result}
+
+
 async def move_element(guid, dx, dy, dz=0, copy=False, transport=None):
     return await _call(
         "MoveElements",
