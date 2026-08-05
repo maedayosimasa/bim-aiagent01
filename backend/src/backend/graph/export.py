@@ -1,3 +1,6 @@
+from .geometry import centroid_from_geometry
+
+
 def export_graph(graph):
 
     nodes = []
@@ -6,13 +9,19 @@ def export_graph(graph):
 
     for node, data in graph.nodes(data=True):
 
+        centroid = centroid_from_geometry(data.get("geometry"))
+
         nodes.append({
 
             "id": node,
 
             "type": data.get("type"),
 
-            "name": data.get("name")
+            "name": data.get("name"),
+
+            "x": centroid[0] if centroid else None,
+
+            "y": centroid[1] if centroid else None
 
         })
 
