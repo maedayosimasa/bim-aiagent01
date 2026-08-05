@@ -5,12 +5,12 @@ import { Grid, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { listElements, type BimElement } from "../api/client";
 import { useArchicadFocus } from "../hooks/useArchicadFocus";
+import { num, record, point2, type Vec2 } from "../bimElevation";
 
 // ==============================
 // Archicad座標(メートル、Z-up) → three.js座標(Y-up)への変換
 // world.x = archicad.x, world.y = archicad.z(高さ), world.z = archicad.y(奥行)
 // ==============================
-type Vec2 = { x: number; y: number };
 type Vec3 = [number, number, number];
 
 type BoxItem = {
@@ -66,20 +66,6 @@ const EMPTY_ELEMENTS: BimElement[] = [];
 const DEFAULT_WALL_THICKNESS = 0.2;
 const DEFAULT_BEAM_SIZE = 0.3;
 const DEFAULT_COLUMN_SIZE = 0.4;
-
-function num(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function point2(value: unknown): Vec2 | null {
-  const r = record(value);
-  if (typeof r.x !== "number" || typeof r.y !== "number") return null;
-  return { x: r.x, y: r.y };
-}
 
 function toScene(x: number, y: number, z: number): Vec3 {
   return [x, z, y];

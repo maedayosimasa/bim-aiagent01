@@ -46,6 +46,8 @@ export type GraphNode = {
   id: string;
   type: string | null;
   name: string | null;
+  x: number | null;
+  y: number | null;
 };
 
 export type GraphEdge = {
