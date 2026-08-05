@@ -41,6 +41,72 @@ docker compose up
 
 ## アーキテクチャ
 
+### 全体レイヤー構成(概念図)
+
+BIM空間知能エンジンは以下のパイプラインを目指す。カッコ内は対応する実装、記号は現状の進捗(◎実装済み/△部分実装・薄い/✗未実装)。各レイヤーの詳細・ギャップは[今後の開発計画](#今後の開発計画未着手)を参照。
+
+```
+Archicad MCP (Windows側ブリッジ、Tapir Add-on)
+      │
+      ▼
+──────────────────────────────────────
+① データ取得層 Data Acquisition        ◎ (archicad_mcp/client.py, tapir.py)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+② データ永続化層 Data Storage          ◎ (database/db.py, SQLite)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+③ ジオメトリエンジン Geometry Engine    ◎ (graph/geometry.py, shapely)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+④ 空間関係エンジン Spatial Relation     ◎ (graph/relation.py, relation_rules.py)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+⑤ グラフエンジン Graph Engine          ◎ (graph/builder.py, topology.py, export.py)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+⑥ 空間知能エンジン Spatial Intelligence △ (engine/spatial.py, graph/analyzer.py, room.py)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+⑦ 解析結果ストア Analysis Results Store △ (database/db.py: engine_analysis_results等、履歴を積まないスナップショットのみ)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+⑧ 埋め込み/インデックス層 Embedding & Indexing △ (engine/vector_store.py, ChromaDB)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+⑨ RAG / AIエージェント層               ✗ (未着手。LLM呼び出し・エージェントループが一切無い)
+──────────────────────────────────────
+      │
+      ▼
+──────────────────────────────────────
+⑩ アクション/操作層 Action & Audit     △ (archicad_mcp/server.pyの書き込み系ツールはあるが監査ログが無い)
+──────────────────────────────────────
+      │
+      ▼
+    React (frontend/)                  ◎
+```
+
+横断的関心事(全レイヤーに関わる。現状ほぼ未整備):
+- **API Gateway**: `main.py`(FastAPI)が全レイヤーをRESTとして束ねる。加えて`/mcp`配下にMCPサーバーとしても公開(ローカルLLM/エージェント用ツール口。DNSリバインディング防止は内部通信専用の前提で無効化してある)。
+- **認証・認可**: 未実装。FastAPIエンドポイントに認証が無く、CORSも`http://localhost:5173`固定(本番フロントのオリジン未設定)。
+- **可観測性**: 未整備。構造化ログが無く`print()`が数箇所あるのみ。Archicad連携の失敗率/レイテンシ、エンジン計算時間などのメトリクスも無い。
+
 ### backend layering
 
 `main.py`(FastAPIルート) → `engine/`(`spatial.py`が解析全体のオーケストレーション、`relation_builder.py`が関係再計算、`vector_store.py`がChromaDB連携) → `graph/`(`builder.py`でNetworkXグラフ生成、`topology.py`でエッジ付与、`relation.py`+`relation_rules.py`で要素タイプ間の隣接/接続判定、`export.py`でJSON変換、`analyzer.py`/`room.py`/`search.py`/`geometry.py`) → `database/db.py`(生sqlite3、SQLAlchemyは未使用。`elements`/`connections`に加え、`engine`/`graph`の計算結果を開発時に検証できるよう保持する`engine_analysis_results`(`analyze_space()`のスナップショット、1行のみ)/`graph_relation_results`(`calculate_relations()`の結果を要素タイプ付きで保持、`connections`とは別の検証専用テーブル)がある。いずれも再計算のたびに全削除→書き込み直す方式で、履歴は積まない。`GET /engine/analysis_snapshot` / `GET /graph/relation_snapshot`で参照できる)。
@@ -73,11 +139,62 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 
 ## 今後の開発計画(未着手)
 
-現状はSQLite(生sqlite3)+ChromaDBの構成。以下は今後実施予定で、まだ着手していない:
+現状はSQLite(生sqlite3)+ChromaDBの構成。[全体レイヤー構成](#全体レイヤー構成概念図)の各レイヤーに対応させて、まだ着手していない項目を挙げる。
+
+### ② データ永続化層
 
 - PostgreSQL(Dockerコンテナ)を構築し、SQLiteから移行
 - Raw BIMデータ用テーブルを作成
-- 空間知能エンジン用(ノード・エッジ)テーブルを作成
-- AI解析結果テーブルを作成
 - FastAPIからSQLAlchemyなどのORMを通して保存・取得できるようにする
 - Reactで各テーブルの内容を確認できる開発用画面を作成する
+- `elements`/`connections`に`model_id`列が無く、複数モデル(複数プロジェクト/複数階)を区別できない。`sync_from_archicad()`の全削除方式と合わせて、モデルを跨いだ運用が事実上できない
+
+### ④ 空間関係エンジン
+
+- `calculate_relations()`(`graph/relation.py`)が全要素の総当たり(O(n²))。現状728要素で約26万ペアを毎回計算しており、要素数が増えると破綻する。空間インデックス(R-tree等、`shapely.STRtree`など)で候補を絞ってから距離判定する実装に変更する必要がある
+
+### ⑥ 空間知能エンジン
+
+- 空間知能エンジン用(ノード・エッジ)テーブルを作成
+- (2026-08-06時点で対応済み)`analyze_space()`の`issues`は`find_isolated_elements`/`find_degenerate_walls`/`find_ambiguous_door_ownership`(`graph/analyzer.py`)による実質的な検出を返すようになった。`wall_check`/`door_check`もこれらの検出件数を反映する。ただし検出項目はまだ「孤立要素・退化ジオメトリ・所属不明ドア」という幾何/位相の品質チェックに限られ、以下の用途別モジュールは未着手
+
+#### 追加モジュール案(2026-08-06 実データで実現可否を調査済み)
+
+`engine/`配下に機能別モジュールを追加する案。実データ(`bim_cache.db`、4階建てサンプル)で必要なプロパティの有無を確認した結果を含む。
+
+| モジュール | 機能 | 実現性 | 前提条件・注意点 |
+|---|---|---|---|
+| `room_analyzer.py` | 隣室解析 | **即着手可** | `calculate_relations()`が既に計算するRoom/Zone-Room/Zone「adjacent」・Room/Zone-Door「connects」をそのまま使える。新規データ取得は不要 |
+| `space_classifier.py` | 用途分類(居間/寝室/キッチン等) | **要データ品質改善、または⑨(LLM)向き** | Archicadの`Zone.details.name`は実データでは全12件が`"ゾーン"`という汎用名のまま(`numberStr`のみ01〜06で区別)で、名前ベースのキーワード分類は今のサンプルでは機能しない。面積・隣接パターンなどの幾何ヒューリスティックか、LLMによる推定(⑨)の方が現実的 |
+| `evacuation.py` | 避難経路解析 | **単一階なら着手可、複数階は要前提整備** | 外部に面するドアの判別が無い(Room/Zoneに1つしか接続していないDoorを「外部ドア」とみなす簡易ヒューリスティックは実装可能)。距離も現状は幾何的な隙間(mm)であり実際の歩行経路長ではないため、経路長は別途Room-Doorグラフ上の最短路として計算する必要がある。**複数階の避難経路には階段の接続情報が必須だが、実データにStair要素が1件も無い**(型内訳: Wall/Column/Beam/Window/Door/Object/Slab/Roof/Dimension/Label/Zone/CutPlane/Elevation/BeamSegment/ColumnSegmentのみ)。階をまたぐ避難経路解析はStair(または類する)要素の同期・関係ルール追加が前提 |
+| `accessibility.py` | 動線解析 | **着手可** | 既存グラフ(Room-Door-Room)のトポロジー解析(行き止まり検出、次数の低いハブ部屋の特定など)で実装できる。既存データのみで完結 |
+| (同上、または新規`equipment.py`) | 設備到達性 | **未着手・前提が無い** | 「設備」に該当するAIオブジェクトが実データに無い(Objectは家具11種+図面注釈マーカーのみで、消火器/AED/分電盤等の設備は無し)。ただし`properties.archicad_details.libPart.name`に実際のライブラリパーツ名(例:「アームチェア 04」)が入っており、キーワード一致で設備種別を判別する仕組み自体は作れる。Object⇔Roomの関係(点-in-ポリゴンによる「収容」関係で、現行のdistance閾値モデルとは別方式が必要)がRELATION_RULESに無いため、まず関係定義から必要 |
+| `building_code.py` | 法規チェック | **狭く始めるべき、要免責表記** | 建築基準法は範囲が広大なため、汎用エンジンではなく「採光有効面積(窓面積/床面積比)」「バリアフリー最小ドア幅」など個別の数値ルールを少数から始めるのが現実的。窓/ドアの`width`/`height`(`properties.archicad_details`、単位m)とZoneのポリゴン面積(shapelyで計算可能)は実データにあるので試算は可能。ただし法規要件は用途/構造/自治体で変わるため、結果は参考値であり法的な適合保証ではないことを明示する必要がある |
+
+**推奨実装順序**: `room_analyzer.py`(データ完備)→`accessibility.py`(動線解析、データ完備)→`evacuation.py`(単一階の経路長のみ、外部ドア判別を追加)→`space_classifier.py`(幾何ヒューリスティック版、または⑨待ち)→`building_code.py`(数値ルールを1つずつ追加)→設備到達性(Object⇔Room関係の新設が前提のため最後)。
+
+### ⑦ 解析結果ストア
+
+- AI解析結果テーブルを作成
+- `engine_analysis_results`/`graph_relation_results`は「直近1回分を全削除→書き込み」方式で履歴を持たない。RAGが時系列の変化(いつ何が変わったか)を参照するには、履歴を積む形のテーブルへの拡張が必要
+
+### ⑧ 埋め込み/インデックス層
+
+- `/bim/index`が手動呼び出しのみで、`sync_from_archicad()`や`rebuild_connections()`の後に自動実行されない。同期後にベクトルインデックスが古いまま放置され得る
+- 埋め込み対象が要素単位の短い説明文のみ(`engine/vector_store.py`の`_describe_element()`)。部屋ごとに周辺要素をまとめた文書など、RAGでの検索精度を上げるチャンク戦略は未検討
+
+### ⑨ RAG / AIエージェント層(最大のギャップ、実質未着手)
+
+- LLM SDKへの依存が一切ない(`backend/pyproject.toml`にanthropic/openai等の記載なし)
+- `search_elements()`(`engine/vector_store.py`)は類似検索のヒットをそのまま返すのみで、LLMによる自然文回答生成(RAGのGeneration部分)が存在しない
+- エージェントのツール呼び出しループ(発話→ツール選択→実行→観察→次の発話)が存在しない。`archicad_mcp/server.py`のMCPツール群(`list_elements`/`search_bim_elements`/`update_element_properties`/`move_archicad_element`等)は「ローカルLLM等が呼べるように」用意されているが、実際に呼ぶエージェント本体が無い
+- 会話/セッションの永続化が無い
+
+### ⑩ アクション/操作層
+
+- `move_archicad_element`/`delete_archicad_elements`/`set_archicad_property_value`など、実在の建物データを変更する破壊的操作が既にAPIとして露出しているが、誰が/いつ/何を変更したかの監査ログが一切ない。AIエージェント(⑨)が自律的にこれらを呼べるようになった段階で、監査ログと(必要なら)承認フローの追加が必須
+
+### 横断的関心事
+
+- 認証・認可の実装(現状FastAPIエンドポイントに認証なし、CORSも`http://localhost:5173`固定)
+- 可観測性の整備(構造化ログ、Archicad連携の失敗率/レイテンシ、エンジン計算時間などのメトリクス)

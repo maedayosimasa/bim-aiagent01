@@ -211,6 +211,8 @@ def test_get_bounding_boxes_and_geometry_conversion():
     assert geometry == {
         "type": "polygon",
         "points": [[0, 0], [1000, 0], [1000, 200], [0, 200]],
+        "z_min": 0,
+        "z_max": 3000,
     }
 
 

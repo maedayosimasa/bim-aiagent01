@@ -14,6 +14,12 @@ guessed. Notably:
   for that; this module intentionally does not rename it.
 - Get3DBoundingBoxes returns {"boundingBoxes3D": [{"boundingBox3D": {xMin,
   yMin, zMin, xMax, yMax, zMax}} | {"error": ...}]}, same order as input.
+  zMin/zMax are attached to every synced element's geometry as "z_min"/
+  "z_max" (mm, see _z_range_from_bounding_box()) regardless of which 2D
+  shape branch produced the geometry - graph/relation.py uses this range
+  to avoid treating elements on different floors as spatially adjacent
+  just because their (x,y) footprint happens to line up (e.g. the same
+  column position repeated on every floor of a multi-story building).
 - "details" (from GetDetailsOfElements) is a `oneOf` union with no
   discriminator field of its own - which shape it is depends entirely on
   the sibling "type" field. Confirmed against WallDetails/ZoneDetails:
@@ -240,6 +246,25 @@ def _to_mm(value):
     return value * _METERS_TO_MM
 
 
+def _z_range_from_bounding_box(bounding_box_item):
+    """Get3DBoundingBoxesの1件から高さの範囲(z_min, z_max。mm単位)を取り出す。
+
+    calculate_relations()(graph/relation.py)が平面距離と組み合わせて使う。
+    これが無いと、平面上では近くても実際には別の階にある要素同士(例えば
+    4階建てビルの各階の同じ位置にある壁)まで隣接/接続と誤判定してしまう。
+    """
+
+    if not isinstance(bounding_box_item, dict):
+        return {}
+
+    box = bounding_box_item.get("boundingBox3D")
+
+    if box is None:
+        return {}
+
+    return {"z_min": _to_mm(box["zMin"]), "z_max": _to_mm(box["zMax"])}
+
+
 def bounding_box_to_geometry(bounding_box_item):
     """Convert one Get3DBoundingBoxes() array item to our geometry schema.
 
@@ -268,6 +293,7 @@ def bounding_box_to_geometry(bounding_box_item):
             [x_max, y_max],
             [x_min, y_max],
         ],
+        **_z_range_from_bounding_box(bounding_box_item),
     }
 
 
@@ -284,12 +310,13 @@ def details_to_geometry(element_type, details, bounding_box_item=None):
     """
 
     details = details or {}
+    z_range = _z_range_from_bounding_box(bounding_box_item)
 
     if element_type == "Wall":
         if details.get("geometryType") == "Polygonal":
             outline = details.get("polygonOutline") or []
             if len(outline) >= 3:
-                return {"type": "polygon", "points": _coords_to_points(outline)}
+                return {"type": "polygon", "points": _coords_to_points(outline), **z_range}
         beg = details.get("begCoordinate")
         end = details.get("endCoordinate")
         if beg is not None and end is not None:
@@ -299,12 +326,13 @@ def details_to_geometry(element_type, details, bounding_box_item=None):
                     [_to_mm(beg["x"]), _to_mm(beg["y"])],
                     [_to_mm(end["x"]), _to_mm(end["y"])],
                 ],
+                **z_range,
             }
 
     elif element_type == "Zone":
         coords = details.get("polygonCoordinates") or []
         if len(coords) >= 3:
-            return {"type": "polygon", "points": _coords_to_points(coords)}
+            return {"type": "polygon", "points": _coords_to_points(coords), **z_range}
 
     return bounding_box_to_geometry(bounding_box_item)
 

@@ -135,6 +135,8 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
     assert json.loads(wall["geometry"]) == {
         "type": "line",
         "points": [[0, 0], [4000, 0]],
+        "z_min": 0,
+        "z_max": 3000,
     }
 
     zone = db.get_element("guid-2")
@@ -145,6 +147,8 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
     assert json.loads(zone["geometry"]) == {
         "type": "polygon",
         "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]],
+        "z_min": 0,
+        "z_max": 3000,
     }
 
 

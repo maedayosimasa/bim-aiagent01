@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 from ..database.db import get_elements, save_engine_analysis_result
 from ..graph.builder import build_graph
 from ..graph.topology import build_topology
-from ..graph.analyzer import analyze_graph
+from ..graph.analyzer import (
+    analyze_graph,
+    find_isolated_elements,
+    find_degenerate_walls,
+    find_ambiguous_door_ownership,
+)
 from ..graph.export import export_graph
 from .relation_builder import rebuild_connections
 
@@ -21,6 +26,11 @@ def analyze_space(model_id: str):
     graph = build_graph()
     graph = build_topology(graph)
     graph_info = analyze_graph(graph)
+
+    degenerate_walls = find_degenerate_walls(graph)
+    ambiguous_doors = find_ambiguous_door_ownership(graph)
+    issues = find_isolated_elements(graph) + degenerate_walls + ambiguous_doors
+
     graph_json = export_graph(graph)
 
     # 要素を分類
@@ -65,13 +75,17 @@ def analyze_space(model_id: str):
 
         "analysis": {
 
-            "wall_check": f"{len(walls)} walls detected",
+            "wall_check": (
+                f"壁{len(walls)}件を検出、うち{len(degenerate_walls)}件がジオメトリ不正(長さ0等)"
+            ),
 
-            "door_check": f"{len(doors)} doors detected"
+            "door_check": (
+                f"ドア{len(doors)}件を検出、うち{len(ambiguous_doors)}件が壁への所属を一意に特定できません"
+            ),
 
         },
 
-        "issues": []
+        "issues": issues
 
     }
 
