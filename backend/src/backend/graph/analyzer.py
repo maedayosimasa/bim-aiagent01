@@ -145,14 +145,27 @@ def find_degenerate_walls(graph):
     return issues
 
 
-def find_ambiguous_door_ownership(graph):
-    """2枚以上の壁に同時に"adjacent"判定されているドアを検出する。
+# ドアが実際に埋め込まれている壁(=所属壁)は、実データ(bim_cache.db、
+# 5699要素の実物件、ドア101件・窓114件全件)で検証した結果、壁の芯線からの
+# 距離が常にちょうど0mmだった(ドアの代表ジオメトリが壁の芯線上に置かれる
+# ため)。一方、RELATION_RULESのWall-Door閾値(600mm)は「同じグラフに
+# 現れる程度に近い」という緩い"adjacent"関係全般のためのものであり、
+# 所属壁の判定にそのまま使うと、実データでは300〜570mm離れた無関係な壁
+# (角で交差する別の壁など)まで拾ってしまい、ドア101件全件が「所属不明」
+# と誤検出される不具合があった。そのため所属判定にはこの専用の狭い閾値を
+# 使う(距離は実データでも常に厳密に0mmなので、浮動小数点誤差程度の余裕を
+# 見込めば十分)。
+DOOR_OWNER_MAX_DISTANCE_MM = 50.0
 
-    通常ドアは1枚の壁に属するはずなので、2枚以上に隣接している場合は
-    ドアの座標が壁のコーナー付近にある、あるいは閾値(relation_rules.py)を
-    跨いで複数の壁を拾ってしまっているなど、所属が一意に定まらない状態を
-    示す。0枚(どの壁にも属さない)はfind_isolated_elements()側で別途
-    検出されるため、ここでは対象にしない。
+
+def find_ambiguous_door_ownership(graph):
+    """2枚以上の壁に同時に埋め込まれているとみなされるドアを検出する。
+
+    通常ドアは1枚の壁に属するはずなので、2枚以上が候補になる場合は
+    ドアの座標が壁のコーナー付近にある、あるいはドアの代表点と複数の壁の
+    芯線がほぼ同時に交差しているなど、所属が一意に定まらない状態を示す。
+    0枚(どの壁にも属さない)はfind_isolated_elements()側で別途検出される
+    ため、ここでは対象にしない。
     """
 
     issues = []
@@ -167,6 +180,7 @@ def find_ambiguous_door_ownership(graph):
             for neighbor in graph.neighbors(node)
             if graph.nodes[neighbor].get("type") == "Wall"
             and graph.edges[node, neighbor].get("relation") == "adjacent"
+            and graph.edges[node, neighbor].get("distance", 0) <= DOOR_OWNER_MAX_DISTANCE_MM
         ]
 
         if len(owner_walls) <= 1:

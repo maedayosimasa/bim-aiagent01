@@ -142,13 +142,13 @@ def test_find_degenerate_walls_ignores_normal_wall(sample_elements):
 
 
 def test_find_ambiguous_door_ownership_reports_door_near_two_walls(sample_elements):
-    # wall001(x=4000)に加え、door001(4000,1500)から300mmしか離れていない
-    # wall002(x=4300)を追加する。どちらもWall-Doorの閾値(600mm)以内なので
-    # door001が2枚の壁に同時に"adjacent"判定され、所属が一意に定まらない。
+    # wall001(x=4000)に加え、door001(4000,1500)からわずか20mmしか離れて
+    # いないwall002(x=4020)を追加する。DOOR_OWNER_MAX_DISTANCE_MM(50mm)
+    # 以内に2枚の壁の芯線が同時に来るため、所属が一意に定まらない。
     sample_elements.insert_element(
         "wall002", "Wall", "近接した別の壁",
         json.dumps({"thickness": 150, "height": 3000}),
-        json.dumps({"type": "line", "points": [[4300, 0], [4300, 3000]]}),
+        json.dumps({"type": "line", "points": [[4020, 0], [4020, 3000]]}),
     )
 
     rebuild_connections()
@@ -163,6 +163,33 @@ def test_find_ambiguous_door_ownership_reports_door_near_two_walls(sample_elemen
     assert issues[0]["type"] == "ambiguous_door_wall_ownership"
 
 
+def test_find_ambiguous_door_ownership_ignores_wall_beyond_ownership_threshold(sample_elements):
+    # 実データ(bim_cache.db、ドア101件)で見つかった不具合の再現:
+    # wall002をdoor001(4000,1500)から300mm離れた位置(x=4300)に置く。
+    # Wall-Doorの一般的な"adjacent"閾値(600mm)には収まるためcalculate_
+    # relations()はエッジを張るが、実データの検証で「ドアの真の所属壁は
+    # 常に距離0mmで見つかる」ことが分かっており、300mmはどう見ても別の
+    # (ドアが埋め込まれていない)壁である。所属判定はこの一般閾値を
+    # そのまま使わず、DOOR_OWNER_MAX_DISTANCE_MM(50mm)で絞るべきで、
+    # このwall002は所属候補に数えず"ambiguous"にしてはならない。
+    sample_elements.insert_element(
+        "wall002", "Wall", "遠い別の壁",
+        json.dumps({"thickness": 150, "height": 3000}),
+        json.dumps({"type": "line", "points": [[4300, 0], [4300, 3000]]}),
+    )
+
+    rebuild_connections()
+
+    graph = build_graph()
+    graph = build_topology(graph)
+
+    # 一般的な"adjacent"閾値には収まるため、グラフ上のエッジ自体は張られる
+    # ことを前提として確認しておく(そうでなければこのテストの意図と違う)。
+    assert graph.edges["door001", "wall002"]["relation"] == "adjacent"
+
+    assert find_ambiguous_door_ownership(graph) == []
+
+
 def test_find_ambiguous_door_ownership_ignores_single_wall(sample_elements):
     rebuild_connections()
 
@@ -170,3 +197,38 @@ def test_find_ambiguous_door_ownership_ignores_single_wall(sample_elements):
     graph = build_topology(graph)
 
     assert find_ambiguous_door_ownership(graph) == []
+
+
+def test_find_ambiguous_door_ownership_with_real_sync_geometry_shape(test_db):
+    # sample_elementsのdoor001は"point"型だが、実際にArchicadから同期
+    # されるドア/窓のジオメトリは常に"polygon"型(bounding_box_to_geometry
+    # ()、archicad_mcp/tapir.py)で、"point"型は一度も来ない。所属判定
+    # ロジックがpolygon型でも正しく動くことを、実データ(bim_cache.db)から
+    # 実際に観測した形(ドアの矩形footprintが壁の芯線をまたぐ)を模して
+    # 確認する。
+    test_db.insert_element(
+        "wall001", "Wall", "所属壁",
+        json.dumps({"thickness": 150, "height": 3000}),
+        json.dumps({"type": "line", "points": [[4000, 0], [4000, 3000]]}),
+    )
+    test_db.insert_element(
+        "door001", "Door", "実データ形式のドア",
+        json.dumps({"width": 900, "height": 2100}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[3915, 1050], [4085, 1050], [4085, 1950], [3915, 1950]],
+        }),
+    )
+
+    rebuild_connections()
+
+    graph = build_graph()
+    graph = build_topology(graph)
+
+    assert find_ambiguous_door_ownership(graph) == []
+
+    wall_neighbors = [
+        n for n in graph.neighbors("door001")
+        if graph.nodes[n].get("type") == "Wall"
+    ]
+    assert wall_neighbors == ["wall001"]
