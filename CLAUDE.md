@@ -43,64 +43,22 @@ docker compose up
 
 ### 全体レイヤー構成(概念図)
 
-BIM空間知能エンジンは以下のパイプラインを目指す。カッコ内は対応する実装、記号は現状の進捗(◎実装済み/△部分実装・薄い/✗未実装)。各レイヤーの詳細・ギャップは[今後の開発計画](#今後の開発計画未着手)を参照。
+BIM空間知能エンジンは以下の順でデータが流れるパイプラインを目指す。状態は現状の進捗(◎実装済み/△部分実装・薄い/✗未実装)。各レイヤーの詳細・ギャップは[今後の開発計画](#今後の開発計画未着手)を参照。
 
-```
-Archicad MCP (Windows側ブリッジ、Tapir Add-on)
-      │
-      ▼
-──────────────────────────────────────
-① データ取得層 Data Acquisition        ◎ (archicad_mcp/client.py, tapir.py)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-② データ永続化層 Data Storage          ◎ (database/db.py, SQLite)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-③ ジオメトリエンジン Geometry Engine    ◎ (graph/geometry.py, shapely)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-④ 空間関係エンジン Spatial Relation     ◎ (graph/relation.py, relation_rules.py)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-⑤ グラフエンジン Graph Engine          ◎ (graph/builder.py, topology.py, export.py)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-⑥ 空間知能エンジン Spatial Intelligence △ (engine/spatial.py, graph/analyzer.py, room.py)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-⑦ 解析結果ストア Analysis Results Store △ (database/db.py: engine_analysis_results等、履歴を積まないスナップショットのみ)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-⑧ 埋め込み/インデックス層 Embedding & Indexing △ (engine/vector_store.py, ChromaDB)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-⑨ RAG / AIエージェント層               ✗ (未着手。LLM呼び出し・エージェントループが一切無い)
-──────────────────────────────────────
-      │
-      ▼
-──────────────────────────────────────
-⑩ アクション/操作層 Action & Audit     △ (archicad_mcp/server.pyの書き込み系ツールはあるが監査ログが無い)
-──────────────────────────────────────
-      │
-      ▼
-    React (frontend/)                  ◎
-```
+データの流れ: Archicad MCP(Windows側ブリッジ、Tapir Add-on) → ①〜⑩ → React(`frontend/`)
+
+| # | レイヤー | 状態 | 実装 |
+|---|---|---|---|
+| ① | データ取得層 Data Acquisition | ◎ | `archicad_mcp/client.py`, `tapir.py` |
+| ② | データ永続化層 Data Storage | ◎ | `database/db.py`, SQLite |
+| ③ | ジオメトリエンジン Geometry Engine | ◎ | `graph/geometry.py`, shapely |
+| ④ | 空間関係エンジン Spatial Relation | ◎ | `graph/relation.py`, `relation_rules.py` |
+| ⑤ | グラフエンジン Graph Engine | ◎ | `graph/builder.py`, `topology.py`, `export.py` |
+| ⑥ | 空間知能エンジン Spatial Intelligence | △ | `engine/spatial.py`, `graph/analyzer.py`, `room.py` |
+| ⑦ | 解析結果ストア Analysis Results Store | △ | `database/db.py`の`engine_analysis_results`等、履歴を積まないスナップショットのみ |
+| ⑧ | 埋め込み/インデックス層 Embedding & Indexing | △ | `engine/vector_store.py`, ChromaDB |
+| ⑨ | RAG / AIエージェント層 | ✗ | 未着手。LLM呼び出し・エージェントループが一切無い |
+| ⑩ | アクション/操作層 Action & Audit | △ | `archicad_mcp/server.py`の書き込み系ツールはあるが監査ログが無い |
 
 横断的関心事(全レイヤーに関わる。現状ほぼ未整備):
 - **API Gateway**: `main.py`(FastAPI)が全レイヤーをRESTとして束ねる。加えて`/mcp`配下にMCPサーバーとしても公開(ローカルLLM/エージェント用ツール口。DNSリバインディング防止は内部通信専用の前提で無効化してある)。
