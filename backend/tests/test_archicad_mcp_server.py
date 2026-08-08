@@ -150,11 +150,11 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
         "z_min": 0,
         "z_max": 3000,
     }
-    # ゾーンカテゴリ("住宅-1"、番号付きサブタイプ)が解決され、実室として
-    # 扱われる(zone_is_envelope=False)ことを確認する。
+    # ゾーンカテゴリ("住宅-1")が表示用情報として解決されることを確認する
+    # (実室/大分類ゾーンの判定はgraph/envelope.pyの幾何包含が根拠であり、
+    # このカテゴリ名は使わない)。
     zone_properties = json.loads(zone["properties"])
     assert zone_properties["zone_category"] == "住宅-1"
-    assert zone_properties["zone_is_envelope"] is False
 
 
 def test_list_archicad_properties_tool(test_db, monkeypatch):

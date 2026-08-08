@@ -164,12 +164,12 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     の命名をそのまま使う(部屋は"Room"ではなく"Zone")。
 
     ZoneはcategoryAttributeIdが指すゾーンカテゴリ名(例:"住宅-1")を解決し
-    properties.zone_categoryに保存する。番号なしの大分類名(例:"住宅")の
-    Zoneは個々の部屋ではなく住戸/区画全体の面積集計用であることが実データ
-    検証で判明しているため、properties.zone_is_envelopeに真偽値として
-    記録する(tapir.envelope_zone_category_names()参照)。graph/relation.py
-    のcalculate_relations()とgraph/room.pyのfind_rooms()がこれを見て、
-    大分類Zoneを実室として誤って隣接/接続判定しないよう除外する。
+    properties.zone_categoryに表示用の情報として保存する。個々の部屋か、
+    住戸/区画全体を表す大分類ゾーンかの判定にはこのカテゴリ名を使わない
+    ——命名規則はArchicadのテンプレートによって様々でありうるため、
+    graph/relation.pyのcalculate_relations()とgraph/room.pyのfind_rooms()
+    は、テンプレートに依存しない幾何包含(graph/envelope.py)を根拠に
+    大分類ゾーンを除外する。
     """
     all_guids = await tapir.get_all_element_guids()
     guids = all_guids if limit <= 0 else all_guids[:limit]
@@ -184,7 +184,6 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     category_name_by_guid = {
         category["attributeId"]["guid"]: category["name"] for category in zone_categories
     }
-    envelope_category_names = tapir.envelope_zone_category_names(zone_categories)
 
     db.clear_elements()
 
@@ -208,7 +207,6 @@ async def sync_from_archicad(limit: int = 50) -> dict:
             "layerIndex": details_item.get("layerIndex"),
             "archicad_details": type_details,
             "zone_category": zone_category,
-            "zone_is_envelope": zone_category in envelope_category_names,
         }
 
         db.insert_element(

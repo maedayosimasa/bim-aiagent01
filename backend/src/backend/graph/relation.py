@@ -2,6 +2,7 @@ import json
 
 from shapely.strtree import STRtree
 
+from .envelope import find_envelope_zone_guids
 from .geometry import parse_geometry, z_gap
 from .relation_rules import RELATION_RULES, RELATION_TARGET_TYPES
 from ..database.db import get_elements
@@ -40,23 +41,40 @@ def determine_relation(element1, element2, distance):
     return rule["relation"]
 
 
-def _is_envelope_zone(element):
-    """住戸/区画全体を表す大分類ゾーン(実室ではない)かどうかを返す。
+def _envelope_zone_guids(elements):
+    """住戸/区画全体を表す大分類ゾーン(実室ではない)のguid集合を返す。
 
-    sync_from_archicad()がproperties.zone_is_envelopeとして事前に判定・
-    保存済みの値をそのまま使う(archicad_mcp/tapir.pyのenvelope_zone_
-    category_names()参照)。実データ検証で、こうした大分類Zone("Cタイプ"
-    等)が同じ住戸内の実室Zone十数件を幾何的に包含しており、これを実室と
-    同列に扱うと1つのドア/壁が同時に多数のZoneへ「隣接」「接続」と誤判定
-    される不具合があった。
+    graph/envelope.pyの幾何包含判定を使う(命名規則には依存しない、
+    詳細はそちらのdocstring参照)。実データ検証で、こうした大分類Zone
+    ("Cタイプ"等)が同じ住戸内の実室Zone十数件を幾何的に包含しており、
+    これを実室と同列に扱うと1つのドア/壁が同時に多数のZoneへ「隣接」
+    「接続」と誤判定される不具合があった。
     """
 
-    if element["type"] not in ("Zone", "Room"):
-        return False
+    zone_records = []
 
-    properties = json.loads(element["properties"] or "{}")
+    for element in elements:
 
-    return bool(properties.get("zone_is_envelope"))
+        if element["type"] not in ("Zone", "Room"):
+            continue
+
+        try:
+            geom, _ = parse_geometry(element["geometry"])
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+
+        if geom.geom_type != "Polygon":
+            continue
+
+        properties = json.loads(element["properties"] or "{}")
+
+        zone_records.append({
+            "guid": element["guid"],
+            "floor": properties.get("floorIndex"),
+            "polygon": geom,
+        })
+
+    return find_envelope_zone_guids(zone_records)
 
 
 def calculate_relations():
@@ -66,9 +84,10 @@ def calculate_relations():
     約24秒かかっていた(CLAUDE.md「④ 空間関係エンジン」参照)。2段階で
     候補を絞り込むことで高速化する:
     (1) RELATION_RULESにどの組み合わせでも登場しない型(Column/Beam/Slab/
-        Object等)、および住戸全体を表す大分類ゾーン(_is_envelope_zone()
-        参照)は絶対に(あるいは実室として)関係を持つべきではないため、
-        あらかじめ除外する(実データ5699要素のうち対象は1653要素のみ)。
+        Object等)、および住戸全体を表す大分類ゾーン(_envelope_zone_
+        guids()参照)は絶対に(あるいは実室として)関係を持つべきではない
+        ため、あらかじめ除外する(実データ5699要素のうち対象は1653要素
+        のみ)。
     (2) 残った要素同士もshapely.STRtree(空間インデックス)で近傍候補だけに
         絞ってから、厳密な距離計算・determine_relation()判定を行う。
     """
@@ -76,12 +95,25 @@ def calculate_relations():
     elements = [
         element for element in get_elements()
         if element["type"] in RELATION_TARGET_TYPES
-        and not _is_envelope_zone(element)
     ]
 
+    envelope_guids = _envelope_zone_guids(elements)
+
+    elements = [e for e in elements if e["guid"] not in envelope_guids]
+
     # 幾何は要素ごとに一度だけパースする(内側ループのたびに同じ要素の
-    # ジオメトリを再パースしていた既存の無駄を避ける)。
-    parsed_geometries = [parse_geometry(element["geometry"]) for element in elements]
+    # ジオメトリを再パースしていた既存の無駄を避ける)。破損したジオメトリ
+    # (座標欠損等)を持つ要素はここで除外し、その1件のせいで計算全体が
+    # クラッシュしないようにする。
+    parsed = []
+    for element in elements:
+        try:
+            parsed.append((element, parse_geometry(element["geometry"])))
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+
+    elements = [element for element, _ in parsed]
+    parsed_geometries = [geometry for _, geometry in parsed]
     geometries = [geom for geom, _ in parsed_geometries]
 
     tree = STRtree(geometries)

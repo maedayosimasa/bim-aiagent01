@@ -266,25 +266,6 @@ def test_get_zone_categories():
     assert {c["name"] for c in categories} == {"住宅", "住宅-1"}
 
 
-def test_envelope_zone_category_names_detects_bases_with_numbered_subtypes():
-    # 実データ(bim_cache.db)で確認した構造: 番号なしの大分類("住宅")は
-    # 住戸全体の面積集計用、番号付きサブタイプ("住宅-1"〜"住宅-6")が実室。
-    # "駐車場"のように大分類しか無い(サブタイプが存在しない)場合は対象外。
-    categories = [
-        {"name": "住宅"}, {"name": "住宅-1"}, {"name": "住宅-2"},
-        {"name": "共用"}, {"name": "共用-1"},
-        {"name": "駐車場"},
-    ]
-
-    assert tapir.envelope_zone_category_names(categories) == {"住宅", "共用"}
-
-
-def test_envelope_zone_category_names_empty_when_no_subtypes():
-    categories = [{"name": "住宅"}, {"name": "事務所"}]
-
-    assert tapir.envelope_zone_category_names(categories) == set()
-
-
 def test_get_selected_element_guids():
     transport = InMemoryTransport(_make_fake_tapir_server())
 

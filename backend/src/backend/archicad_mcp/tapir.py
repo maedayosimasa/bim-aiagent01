@@ -48,7 +48,6 @@ guessed. Notably:
 
 import json
 import math
-import re
 
 from . import client as archicad_client
 
@@ -228,42 +227,17 @@ async def get_zone_categories(transport=None):
     GetDetailsOfElementsのレスポンスには含まれず、別途GetAttributesByType
     (attributeType="ZoneCategory")で解決する必要がある。実データで検証した
     結果、Archicad側の「名前と位置」タブの「カテゴリ」欄がこれに対応する。
+
+    このカテゴリ名はproperties.zone_categoryとして保存する表示用の情報に
+    とどめる。実室か、住戸/区画全体を表す大分類ゾーンかの判定には使わない
+    ——命名規則(例:番号なしの大分類名+番号付きサブタイプという構成)は
+    Archicadのテンプレートによって書き方が様々でありうるため、この判定は
+    テンプレートに依存しない幾何包含(graph/envelope.py)を根拠にする。
     """
     payload = await _call(
         "GetAttributesByType", {"attributeType": "ZoneCategory"}, transport=transport
     )
     return payload.get("attributes", [])
-
-
-# "住宅-1"のような番号付きサブタイプ名から、その大分類名("住宅")を取り出す。
-_ZONE_CATEGORY_SUBTYPE_RE = re.compile(r"^(.+)-\d+$")
-
-
-def envelope_zone_category_names(categories):
-    """住戸/区画全体を表す「大分類」カテゴリ名の集合を返す。
-
-    実データ(bim_cache.db、5699要素の実物件)で検証した結果、Archicadの
-    ゾーンカテゴリは「大分類(例:住宅)」と、その番号付きサブタイプ
-    (住宅-1〜6等)の2階層で構成されている。番号なしの大分類名を持つZone
-    は個々の部屋ではなく、住戸/区画全体の面積集計用(例:"Cタイプ"という
-    名前で"住宅"カテゴリのZoneが、同じ住戸内の実室Zone14件を100%
-    幾何包含していることを確認済み)。これは名前のハードコードではなく、
-    このAPIが返すカテゴリ一覧自体から機械的に導出する(「Xという名前の
-    大分類が存在し、かつ"X-数字"という名前のサブタイプが他に存在する」
-    ものをXとして集める)ため、カテゴリ体系が変わっても追従できる。
-
-    calculate_relations()(graph/relation.py)とfind_rooms()(graph/room.py)
-    が、こうした大分類Zoneを実室として扱ってしまい、1つのドア/壁の
-    近くにあるはずのない多数のZoneと同時に「隣接」「接続」と誤判定する
-    不具合の原因になっていた。
-    """
-    names = {category["name"] for category in categories}
-
-    return {
-        match.group(1)
-        for name in names
-        if (match := _ZONE_CATEGORY_SUBTYPE_RE.match(name)) and match.group(1) in names
-    }
 
 
 async def list_properties(transport=None):

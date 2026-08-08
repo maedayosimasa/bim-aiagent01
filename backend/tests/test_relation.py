@@ -148,21 +148,68 @@ def test_calculate_relations_excludes_non_target_types_even_when_touching(test_d
 
 
 def test_calculate_relations_excludes_envelope_zones(test_db):
-    # 住戸/区画全体を表す大分類ゾーン("Cタイプ"等、properties.zone_is_
-    # envelope=True)は実室ではないため、他のZoneと幾何的に重なっていても
-    # 隣接/接続関係を持たない(実データ検証で発覚: 1つの大分類ゾーンが
-    # 同じ住戸内の実室十数件を幾何包含し、ドアが同時に多数の部屋へ
-    # 「接続」と誤判定されていた。archicad_mcp/tapir.pyの
-    # envelope_zone_category_names()参照)。
-    test_db.insert_element(
-        "room001", "Zone", "LD",
-        json.dumps({"zone_category": "住宅-1", "zone_is_envelope": False}),
-        json.dumps({"type": "polygon", "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]]}),
-    )
+    # 住戸/区画全体を表す大分類ゾーン("Cタイプ"等)は実室ではないため、
+    # 他のZoneを幾何的に包含していても隣接/接続関係を持たない(実データ
+    # 検証で発覚: 1つの大分類ゾーンが同じ住戸内の実室十数件を幾何包含し、
+    # ドアが同時に多数の部屋へ「接続」と誤判定されていた)。除外の根拠は
+    # 命名規則ではなく幾何包含のみ(graph/envelope.py、Archicadのテンプレ
+    # ートによってカテゴリの命名規則が異なりうるため)。ここでは実データと
+    # 同じパターン(大きな1枚のZoneが、同一階の他Zoneを3件以上・面積の
+    # 大部分にわたって包含する)を再現する。
     test_db.insert_element(
         "envelope001", "Zone", "Cタイプ",
-        json.dumps({"zone_category": "住宅", "zone_is_envelope": True}),
-        json.dumps({"type": "polygon", "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]]}),
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    test_db.insert_element(
+        "room001", "Zone", "LD",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [3000, 0], [3000, 3000], [0, 3000]]}),
+    )
+    test_db.insert_element(
+        "room002", "Zone", "キッチン",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[4000, 0], [7000, 0], [7000, 3000], [4000, 3000]]}),
+    )
+    test_db.insert_element(
+        "room003", "Zone", "トイレ",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 4000], [3000, 4000], [3000, 7000], [0, 7000]]}),
+    )
+
+    # room001〜003は互いに離れており(200mm閾値超)直接は隣接しないため、
+    # envelope001が正しく除外されていれば関係は一つも生まれない。
+    assert calculate_relations() == []
+
+
+def test_calculate_relations_ignores_zone_with_invalid_geometry_for_envelope_check(test_db):
+    # 大分類ゾーン判定(graph/envelope.py)の対象探索中に壊れたジオメトリの
+    # Zoneに出会ってもクラッシュせず、単に包含判定の対象から外すだけで
+    # 処理を継続する。
+    test_db.insert_element(
+        "wall001", "Wall", "壁",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+    )
+    test_db.insert_element(
+        "zone_broken", "Zone", "壊れたゾーン",
+        json.dumps({}),
+        "not valid json",
+    )
+
+    assert calculate_relations() == []
+
+
+def test_calculate_relations_ignores_non_polygon_zone_for_envelope_check(test_db):
+    test_db.insert_element(
+        "wall001", "Wall", "壁",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+    )
+    test_db.insert_element(
+        "zone_point", "Zone", "点ジオメトリのゾーン",
+        json.dumps({}),
+        json.dumps({"type": "point", "x": 0, "y": 0}),
     )
 
     assert calculate_relations() == []
