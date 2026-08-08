@@ -110,6 +110,15 @@ def test_engine_accessibility_endpoint(api_client, sample_elements):
     assert "hubs" in body
 
 
+def test_engine_equipment_endpoint(api_client, sample_elements):
+    response = api_client.get("/engine/equipment")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "rooms" in body
+    assert "unplaced_equipment" in body
+
+
 def test_engine_analysis_snapshot_endpoint(api_client, test_db):
     response = api_client.get("/engine/analysis_snapshot")
 

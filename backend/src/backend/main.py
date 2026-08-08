@@ -12,6 +12,7 @@ from .engine.room_engine import analyze_room_adjacency
 from .engine.evacuation_engine import find_evacuation_routes
 from .engine.code_engine import check_daylighting, check_accessible_door_width
 from .engine.accessibility import analyze_accessibility
+from .engine.equipment import find_room_equipment
 from .database.db import create_tables
 from .database.db import insert_element
 from mcp.server.transport_security import TransportSecuritySettings
@@ -304,6 +305,14 @@ def engine_code_accessible_doors():
 def engine_accessibility():
 
     return analyze_accessibility()
+
+
+@app.get("/engine/equipment")
+def engine_equipment():
+    # 対象は名前ベースのキーワード一致(engine/equipment.pyのEQUIPMENT_
+    # KEYWORDS参照)。Objectの座標はバウンディングボックス近似のみ。
+
+    return find_room_equipment()
 
 
 # ==============================
