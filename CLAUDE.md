@@ -136,6 +136,8 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
   - Door/Windowの`properties.archicad_details.ownerElementId`(所属壁のGUID、Archicad側の確定情報で幾何推測ではない)を起点に、その壁の両側(厚み方向)にプローブ点を置き、実際にどのRoom/Zoneポリゴンに含まれるか(`polygon.contains(point)`)で判定する方式に変更した(`graph/door_ownership.py`の`find_door_room_guids()`、`graph/relation.py`の`_refine_door_room_connections()`から呼ばれる)。owner壁が特定できないドア(実データでは稀)は従来の距離ベース判定にフォールバックする。
   - **実装中に新たなバグを作り込み、同日中に発見・修正した**: この点-in-ポリゴン判定はfloorIndexを考慮していなかったため、平面(x,y)上で同じ座標に重なる別階のZone(EV/PS等の縦シャフト、実データで"MB""共用廊下"等の同名Zoneが複数階に重複)まで誤ってヒットしていた。ドアと同じfloorIndexのRoom/Zoneのみを候補にするよう修正(`room_records_by_floor`)。
   - **実データでの効果**(5708要素、floorIndexフィルタ適用後の最終値): ドアの接続数分布が3〜40件という無秩序な状態から、**1件(31件)・2件(56件)のみ**という建築的に正しいパターン(内部ドア=2部屋、外部ドア=1部屋)に収束した。避難経路が届かない部屋は143室中87室(接続0件の76室の内訳はPS/MB(配管・メーター)/バルコニー(引き戸でWindow扱いの可能性)/屋外階段/EV/前面道路が大半を占め、ドアが存在しないのが自然な場所が中心で、RAG等による用途分類が無い現状では妥当な結果と判断)。
+- **(2026-08-08対応済み・実データで検証)Wall-Door/Wall-Windowの"adjacent"にも同じowner壁ベースの絞り込みを適用した。** ユーザーが「解析結果DB」タブの空間関係グラフ一覧表を実際に見て、壁-ドア間の距離が300〜470mm前後とバラつく行が多数あることを指摘したのがきっかけ。実データで具体的な組を検証したところ、その壁が実際にはそのドアの所属壁ではなく(所属壁は別にあり距離0.0mmで存在)、単に600mm閾値内にたまたま入っていただけの無関係な壁(角で交わる隣の壁等)だった。`graph/door_ownership.py`に`find_owner_wall_guid()`を追加(Door/Window共通、`_door_owner_wall()`のpublicラッパー)し、`graph/relation.py`の`_refine_wall_opening_adjacency()`で、owner壁が特定できるDoor/Windowについては、owner壁以外との"adjacent"を`calculate_relations()`の結果から除外する(owner壁が特定できない場合は既存の距離ベース判定にフォールバック)。
+  - **実データでの効果**(5708要素): 関係総数2867→**945件**に減少。Wall-Door"adjacent"は101件のドア全てで**所属壁1枚のみ・距離0.0mm**に完全収束(以前は0〜472.7mmに散らばっていた)。Wall-Window"adjacent"も110件全て同様。空間関係グラフ・関係一覧テーブルには、実際に一致する(所属する)組み合わせのみが表示されるようになった
 
 #### 追加モジュール案(2026-08-06 実現可否を調査、2026-08-08 実装)
 

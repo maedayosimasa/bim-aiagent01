@@ -4,6 +4,7 @@ from backend.graph.relation import (
     determine_relation,
     calculate_relations,
     _refine_door_room_connections,
+    _refine_wall_opening_adjacency,
 )
 
 
@@ -460,3 +461,78 @@ def test_calculate_relations_falls_back_to_distance_when_door_owner_unknown(samp
 
     assert by_pair[frozenset(("door001", "room001"))] == "connects"
     assert by_pair[frozenset(("door001", "room002"))] == "connects"
+
+
+def test_calculate_relations_wall_adjacency_limited_to_owner_wall(test_db):
+    # 実データで見つかったパターンの再現: door1はwall1の範囲内に設置されて
+    # いる(距離0mm)が、wall1の端点でwall2(別の壁)と接しているため、
+    # 距離ベースの一般的な"adjacent"判定(600mm閾値)だとwall2ともヒット
+    # してしまう(door1-wall2間は100mm)。owner壁(wall1)以外との
+    # "adjacent"は除外されなければならない。
+    test_db.insert_element(
+        "wall1", "Wall", "壁1",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[0, 0], [2000, 0]]}),
+    )
+    test_db.insert_element(
+        "wall2", "Wall", "角で接する別の壁",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[2000, 0], [2000, 2000]]}),
+    )
+    test_db.insert_element(
+        "door1", "Door", "ドア",
+        json.dumps({"archicad_details": {
+            "ownerElementType": "Wall",
+            "ownerElementId": {"guid": "wall1"},
+        }}),
+        json.dumps({"type": "polygon", "points": [[1700, -50], [1900, -50], [1900, 50], [1700, 50]]}),
+    )
+
+    relations = calculate_relations()
+
+    wall_adjacent = {
+        r["target_guid"] if r["source_guid"] == "door1" else r["source_guid"]
+        for r in relations
+        if r["relation"] == "adjacent" and "door1" in (r["source_guid"], r["target_guid"])
+    }
+
+    assert wall_adjacent == {"wall1"}
+
+
+def test_refine_wall_opening_adjacency_filters_when_opening_is_relation_source():
+    # calculate_relations()内部のSTRtreeループでは(source, target)の向きが
+    # 要素の並び順に依存するため、Door/Windowがsource・Wallがtargetになる
+    # 組み合わせも正しく絞り込めることを直接確認する。
+    wall1 = {"guid": "wall1", "type": "Wall", "properties": "{}"}
+    wall2 = {"guid": "wall2", "type": "Wall", "properties": "{}"}
+    door1 = {
+        "guid": "door1", "type": "Door",
+        "properties": json.dumps({"archicad_details": {
+            "ownerElementType": "Wall",
+            "ownerElementId": {"guid": "wall1"},
+        }}),
+    }
+    relations = [
+        {"source_guid": "door1", "target_guid": "wall1", "relation": "adjacent", "distance": 0.0},
+        {"source_guid": "door1", "target_guid": "wall2", "relation": "adjacent", "distance": 100.0},
+    ]
+
+    refined = _refine_wall_opening_adjacency([wall1, wall2, door1], relations)
+
+    assert refined == [
+        {"source_guid": "door1", "target_guid": "wall1", "relation": "adjacent", "distance": 0.0},
+    ]
+
+
+def test_refine_wall_opening_adjacency_falls_back_when_owner_unknown():
+    # owner壁情報を持たないDoor/Windowは、既存の距離ベース判定のまま
+    # 変更しない(フォールバック)。
+    wall1 = {"guid": "wall1", "type": "Wall", "properties": "{}"}
+    door1 = {"guid": "door1", "type": "Door", "properties": "{}"}
+    relations = [
+        {"source_guid": "wall1", "target_guid": "door1", "relation": "adjacent", "distance": 300.0},
+    ]
+
+    refined = _refine_wall_opening_adjacency([wall1, door1], relations)
+
+    assert refined == relations

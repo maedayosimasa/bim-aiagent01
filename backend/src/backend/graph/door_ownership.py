@@ -53,6 +53,20 @@ def _door_owner_wall(door, walls_by_guid):
     return walls_by_guid.get(owner_guid)
 
 
+def find_owner_wall_guid(opening, walls_by_guid):
+    """Door/Windowのowner壁のguidを返す(特定できなければNone)。
+
+    _door_owner_wall()という名前だが、Window(Door同様LibPartBased
+    ElementDetailsとしてownerElementType/ownerElementIdを持つ)を渡しても
+    同じロジックで正しく動く。graph/relation.pyのWall-Door/Wall-Window
+    "adjacent"の絞り込みで使う。
+    """
+
+    owner_wall = _door_owner_wall(opening, walls_by_guid)
+
+    return owner_wall["guid"] if owner_wall is not None else None
+
+
 def _probe_points(wall):
     """壁の芯線の中点から、壁の厚み方向(法線)両側にプローブ点を置く。"""
 

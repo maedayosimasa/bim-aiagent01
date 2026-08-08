@@ -3,7 +3,7 @@ from collections import defaultdict
 
 from shapely.strtree import STRtree
 
-from .door_ownership import find_door_room_guids
+from .door_ownership import find_door_room_guids, find_owner_wall_guid
 from .envelope import find_envelope_zone_guids
 from .geometry import parse_geometry, z_gap
 from .relation_rules import RELATION_RULES, RELATION_TARGET_TYPES
@@ -189,6 +189,63 @@ def _refine_door_room_connections(elements, relations):
     return relations
 
 
+def _refine_wall_opening_adjacency(elements, relations):
+    """Wall-Door/Wall-Windowの"adjacent"を、owner壁ベースの精密な判定で絞り込む。
+
+    距離ベースの一般的な"adjacent"判定(RELATION_RULES、閾値600mm)は、
+    ドア/窓が実際に設置されている壁だけでなく、たまたま600mm以内にある
+    無関係な壁(隣接する別の壁の端点付近等)まで拾ってしまう。実データで
+    検証した結果、真の所属壁は距離0.0mmで必ず見つかる一方、無関係な壁は
+    85〜600mmの範囲に散らばっていることを確認済み(壁の芯線とドア/窓の
+    代表ジオメトリの位置関係による)。owner壁(properties.archicad_
+    details.ownerElementId、Archicad側の確定情報)が特定できるDoor/
+    Windowは、その壁との"adjacent"のみを残し、他の壁との"adjacent"は
+    除外する。owner壁が特定できない場合は既存の距離ベース判定のまま
+    変更しない(フォールバック)。
+    """
+
+    openings = [element for element in elements if element["type"] in ("Door", "Window")]
+
+    if not openings:
+        return relations
+
+    walls_by_guid = {
+        element["guid"]: element for element in elements if element["type"] == "Wall"
+    }
+
+    owner_wall_guid_by_opening = {}
+
+    for opening in openings:
+
+        owner_wall_guid = find_owner_wall_guid(opening, walls_by_guid)
+
+        if owner_wall_guid is not None:
+            owner_wall_guid_by_opening[opening["guid"]] = owner_wall_guid
+
+    if not owner_wall_guid_by_opening:
+        return relations
+
+    def _is_non_owner_wall_adjacency(relation):
+
+        if relation["relation"] != "adjacent":
+            return False
+
+        source, target = relation["source_guid"], relation["target_guid"]
+
+        if source in owner_wall_guid_by_opening and target in walls_by_guid:
+            return target != owner_wall_guid_by_opening[source]
+
+        if target in owner_wall_guid_by_opening and source in walls_by_guid:
+            return source != owner_wall_guid_by_opening[target]
+
+        return False
+
+    return [
+        relation for relation in relations
+        if not _is_non_owner_wall_adjacency(relation)
+    ]
+
+
 def calculate_relations():
     """要素間の空間関係(隣接/接続)を計算する。
 
@@ -279,5 +336,7 @@ def calculate_relations():
                     "relation": relation,
                     "distance": distance,
                 })
+
+    relations = _refine_wall_opening_adjacency(elements, relations)
 
     return _refine_door_room_connections(elements, relations)
