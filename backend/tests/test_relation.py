@@ -1,6 +1,10 @@
 import json
 
-from backend.graph.relation import determine_relation, calculate_relations
+from backend.graph.relation import (
+    determine_relation,
+    calculate_relations,
+    _refine_door_room_connections,
+)
 
 
 def test_determine_relation_within_max_distance():
@@ -97,6 +101,54 @@ def test_calculate_relations_ignores_elements_on_different_floors(test_db):
 
     assert by_pair[frozenset(("door_floor1", "wall_floor1"))] == "adjacent"
     assert frozenset(("door_floor1", "wall_floor4")) not in by_pair
+
+
+def test_calculate_relations_ignores_pairs_with_different_floor_index_even_when_z_overlaps(test_db):
+    # 実データ検証で見つかった不具合の再現: EV/PS等の縦シャフト系Zoneは
+    # 階をまたいでz範囲が「隙間」ではなく「重複」するように登録されている
+    # (1階分z:400〜3400・2階分z:3300〜6300、100mm重複)。z-gapは隙間を
+    # 前提にしているためこの重複ケースを切り分けられないが、floorIndexが
+    # 異なれば無条件で除外されなければならない。
+    test_db.insert_element(
+        "zone_floor0", "Zone", "EV(1階)",
+        json.dumps({"floorIndex": 0}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [2000, 0], [2000, 2000], [0, 2000]],
+            "z_min": 400, "z_max": 3400,
+        }),
+    )
+    test_db.insert_element(
+        "zone_floor1", "Zone", "EV(2階)",
+        json.dumps({"floorIndex": 1}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [2000, 0], [2000, 2000], [0, 2000]],
+            "z_min": 3300, "z_max": 6300,
+        }),
+    )
+
+    assert calculate_relations() == []
+
+
+def test_calculate_relations_allows_pair_when_floor_index_missing(test_db):
+    # floorIndexが片方(または両方)に無い場合(合成データ等)は、従来通り
+    # z-gapのみで判定する後方互換を保つ。
+    test_db.insert_element(
+        "wall_a", "Wall", "壁A",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[0, 0], [1000, 0]], "z_min": 0, "z_max": 3000}),
+    )
+    test_db.insert_element(
+        "door_a", "Door", "ドアA",
+        json.dumps({}),
+        json.dumps({"type": "point", "x": 500, "y": 0, "z_min": 900, "z_max": 3000}),
+    )
+
+    relations = calculate_relations()
+
+    assert len(relations) == 1
+    assert relations[0]["relation"] == "adjacent"
 
 
 def test_calculate_relations_connects_when_z_ranges_overlap(test_db):
@@ -213,3 +265,198 @@ def test_calculate_relations_ignores_non_polygon_zone_for_envelope_check(test_db
     )
 
     assert calculate_relations() == []
+
+
+def test_calculate_relations_refines_door_room_connections_using_owner_wall(test_db):
+    # ドアのowner壁(archicad_details.ownerElementType/ownerElementId)が
+    # 分かる場合、距離ベースの一般的な"connects"(700mm閾値)ではroom3も
+    # 誤って接続と判定されてしまう(door1からroom3までの距離は500mm)が、
+    # 壁の両側の点-in-ポリゴン判定により、実際に壁を挟むroom1・room2のみが
+    # 正しく接続と判定されることを確認する(graph/door_ownership.py参照)。
+    test_db.insert_element(
+        "wall1", "Wall", "壁",
+        json.dumps({"archicad_details": {"begThickness": 0.2, "endThickness": 0.2}}),
+        json.dumps({"type": "line", "points": [[1000, 0], [1000, 2000]]}),
+    )
+    test_db.insert_element(
+        "door1", "Door", "ドア",
+        json.dumps({"archicad_details": {
+            "ownerElementType": "Wall",
+            "ownerElementId": {"guid": "wall1"},
+        }}),
+        json.dumps({"type": "point", "x": 1000, "y": 1000}),
+    )
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [1000, 0], [1000, 2000], [0, 2000]]}),
+    )
+    test_db.insert_element(
+        "room2", "Room", "居室B",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[1000, 0], [2000, 0], [2000, 2000], [1000, 2000]]}),
+    )
+    test_db.insert_element(
+        "room3", "Room", "近くにあるだけの別の部屋",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[1000, 1500], [1500, 1500], [1500, 2000], [1000, 2000]]}),
+    )
+
+    relations = calculate_relations()
+
+    door_connects = {
+        r["target_guid"] if r["source_guid"] == "door1" else r["source_guid"]
+        for r in relations
+        if r["relation"] == "connects" and "door1" in (r["source_guid"], r["target_guid"])
+    }
+
+    assert door_connects == {"room1", "room2"}
+
+
+def _element(guid, element_type, properties, geometry):
+    return {
+        "guid": guid,
+        "type": element_type,
+        "properties": json.dumps(properties),
+        "geometry": json.dumps(geometry) if not isinstance(geometry, str) else geometry,
+    }
+
+
+def test_refine_door_room_connections_filters_relation_with_door_as_target():
+    # calculate_relations()内部のSTRtreeループでは(source, target)の向きが
+    # 要素の並び順に依存するため、Roomがsource・Doorがtargetになる
+    # 組み合わせも正しく除外・置換できることを直接確認する。
+    wall = _element(
+        "wall1", "Wall",
+        {"archicad_details": {"begThickness": 0.2, "endThickness": 0.2}},
+        {"type": "line", "points": [[1000, 0], [1000, 2000]]},
+    )
+    door = _element(
+        "door1", "Door",
+        {"archicad_details": {
+            "ownerElementType": "Wall",
+            "ownerElementId": {"guid": "wall1"},
+        }},
+        {"type": "point", "x": 1000, "y": 1000},
+    )
+    room1 = _element(
+        "room1", "Room", {},
+        {"type": "polygon", "points": [[0, 0], [1000, 0], [1000, 2000], [0, 2000]]},
+    )
+    room2 = _element(
+        "room2", "Room", {},
+        {"type": "polygon", "points": [[1000, 0], [2000, 0], [2000, 2000], [1000, 2000]]},
+    )
+
+    elements = [wall, door, room1, room2]
+    relations = [
+        {"source_guid": "room1", "target_guid": "door1", "relation": "connects", "distance": 0.0},
+        # owner壁情報を持たない(=refined_room_guidsの対象外の)ドアが
+        # 絡む"connects"は素通りする(_is_refined_door_room_connects()の
+        # どちらの分岐にも該当しない)ことも合わせて確認する。
+        {"source_guid": "room1", "target_guid": "door_unrelated", "relation": "connects", "distance": 100.0},
+    ]
+
+    refined = _refine_door_room_connections(elements, relations)
+
+    assert ("room1", "door1") not in {(r["source_guid"], r["target_guid"]) for r in refined}
+    assert {"source_guid": "room1", "target_guid": "door_unrelated", "relation": "connects", "distance": 100.0} in refined
+    door_rooms = {
+        r["target_guid"] if r["source_guid"] == "door1" else r["source_guid"]
+        for r in refined
+        if "door1" in (r["source_guid"], r["target_guid"])
+    }
+    assert door_rooms == {"room1", "room2"}
+
+
+def test_refine_door_room_connections_skips_rooms_with_unusable_geometry():
+    # 大分類ゾーン除外(_envelope_zone_guids)とは別に、この関数自身が
+    # room_recordsを構築する際にも、破損したジオメトリやpolygonでない
+    # 形状のRoomをクラッシュせずスキップできることを確認する。
+    wall = _element(
+        "wall1", "Wall",
+        {"archicad_details": {"begThickness": 0.2}},
+        {"type": "line", "points": [[1000, 0], [1000, 2000]]},
+    )
+    door = _element(
+        "door1", "Door",
+        {"archicad_details": {
+            "ownerElementType": "Wall",
+            "ownerElementId": {"guid": "wall1"},
+        }},
+        {"type": "point", "x": 1000, "y": 1000},
+    )
+    room_broken = _element("room_broken", "Room", {}, "not valid json")
+    room_point = _element("room_point", "Room", {}, {"type": "point", "x": 0, "y": 0})
+    room_good = _element(
+        "room_good", "Room", {},
+        {"type": "polygon", "points": [[0, 0], [1000, 0], [1000, 2000], [0, 2000]]},
+    )
+
+    elements = [wall, door, room_broken, room_point, room_good]
+
+    refined = _refine_door_room_connections(elements, [])
+
+    door_rooms = {
+        r["target_guid"] for r in refined if r["source_guid"] == "door1"
+    }
+    assert door_rooms == {"room_good"}
+
+
+def test_refine_door_room_connections_ignores_same_xy_room_on_different_floor():
+    # 実データで発覚した不具合の再現: EV/PS等の縦シャフトのように、
+    # 平面(x,y)上は同じ位置に複数階のZoneが重なっていると、floorIndexを
+    # 見ずに点-in-ポリゴン判定するとドアと別の階のZoneまでヒットして
+    # しまう。ドアと同じfloorIndexのRoom/Zoneだけを候補にすべきことを
+    # 確認する。
+    wall = _element(
+        "wall1", "Wall",
+        {
+            "floorIndex": 1,
+            "archicad_details": {"begThickness": 0.2, "endThickness": 0.2},
+        },
+        {"type": "line", "points": [[1000, 0], [1000, 2000]]},
+    )
+    door = _element(
+        "door1", "Door",
+        {
+            "floorIndex": 1,
+            "archicad_details": {
+                "ownerElementType": "Wall",
+                "ownerElementId": {"guid": "wall1"},
+            },
+        },
+        {"type": "point", "x": 1000, "y": 1000},
+    )
+    room_floor1 = _element(
+        "room_floor1", "Room", {"floorIndex": 1},
+        {"type": "polygon", "points": [[0, 0], [1000, 0], [1000, 2000], [0, 2000]]},
+    )
+    # room_floor0はドアと同じXY位置に重なる別階(floorIndex=0)の部屋。
+    # 点-in-ポリゴン判定だけならヒットしてしまうが、floorIndexが違うので
+    # 候補から除外されなければならない。
+    room_floor0 = _element(
+        "room_floor0", "Room", {"floorIndex": 0},
+        {"type": "polygon", "points": [[1000, 0], [2000, 0], [2000, 2000], [1000, 2000]]},
+    )
+
+    elements = [wall, door, room_floor1, room_floor0]
+
+    refined = _refine_door_room_connections(elements, [])
+
+    door_rooms = {r["target_guid"] for r in refined if r["source_guid"] == "door1"}
+    assert door_rooms == {"room_floor1"}
+
+
+def test_calculate_relations_falls_back_to_distance_when_door_owner_unknown(sample_elements):
+    # ownerElementId等が無いドア(実データでは稀だが、合成データ/古い
+    # データではあり得る)は、従来通り距離ベースの"connects"判定のまま
+    # 動作する(後方互換)。sample_elementsのdoor001はowner情報を持たない。
+    relations = calculate_relations()
+    by_pair = {
+        frozenset((r["source_guid"], r["target_guid"])): r["relation"]
+        for r in relations
+    }
+
+    assert by_pair[frozenset(("door001", "room001"))] == "connects"
+    assert by_pair[frozenset(("door001", "room002"))] == "connects"

@@ -101,6 +101,15 @@ def test_engine_code_accessible_doors_endpoint(api_client, sample_elements):
     assert "disclaimer" in response.json()
 
 
+def test_engine_accessibility_endpoint(api_client, sample_elements):
+    response = api_client.get("/engine/accessibility")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "dead_ends" in body
+    assert "hubs" in body
+
+
 def test_engine_analysis_snapshot_endpoint(api_client, test_db):
     response = api_client.get("/engine/analysis_snapshot")
 

@@ -68,7 +68,7 @@ BIM空間知能エンジンは以下の順でデータが流れるパイプラ�
 
 ### backend layering
 
-`main.py`(FastAPIルート) → `engine/`(`spatial.py`が解析全体のオーケストレーション、`relation_builder.py`が関係再計算、`vector_store.py`がChromaDB連携、`site.py`が敷地/道路Zoneの名前検索、`room_engine.py`/`evacuation_engine.py`/`code_engine.py`が空間知能エンジンの用途別モジュール、いずれも2026-08-08追加)→ `graph/`(`builder.py`でNetworkXグラフ生成、`topology.py`でエッジ付与、`relation.py`+`relation_rules.py`で要素タイプ間の隣接/接続判定、`export.py`でJSON変換、`analyzer.py`/`room.py`/`search.py`/`geometry.py`/`path.py`(2026-08-08追加、経路探索)) → `database/db.py`(生sqlite3、SQLAlchemyは未使用。`elements`/`connections`に加え、`engine`/`graph`の計算結果を開発時に検証できるよう保持する`engine_analysis_results`(`analyze_space()`のスナップショット、1行のみ)/`graph_relation_results`(`calculate_relations()`の結果を要素タイプ付きで保持、`connections`とは別の検証専用テーブル)がある。いずれも再計算のたびに全削除→書き込み直す方式で、履歴は積まない。`GET /engine/analysis_snapshot` / `GET /graph/relation_snapshot`で参照できる)。
+`main.py`(FastAPIルート) → `engine/`(`spatial.py`が解析全体のオーケストレーション、`relation_builder.py`が関係再計算、`vector_store.py`がChromaDB連携、`site.py`が敷地/道路Zoneの名前検索、`room_engine.py`/`evacuation_engine.py`/`code_engine.py`/`accessibility.py`が空間知能エンジンの用途別モジュール、いずれも2026-08-08追加)→ `graph/`(`builder.py`でNetworkXグラフ生成、`topology.py`でエッジ付与、`relation.py`+`relation_rules.py`で要素タイプ間の隣接/接続判定、`envelope.py`(2026-08-08追加、大分類ゾーンの幾何包含判定)、`door_ownership.py`(2026-08-08追加、ドアのowner壁ベースの部屋判定)、`export.py`でJSON変換、`analyzer.py`/`room.py`/`search.py`/`geometry.py`/`path.py`(2026-08-08追加、経路探索)) → `database/db.py`(生sqlite3、SQLAlchemyは未使用。`elements`/`connections`に加え、`engine`/`graph`の計算結果を開発時に検証できるよう保持する`engine_analysis_results`(`analyze_space()`のスナップショット、1行のみ)/`graph_relation_results`(`calculate_relations()`の結果を要素タイプ付きで保持、`connections`とは別の検証専用テーブル)がある。いずれも再計算のたびに全削除→書き込み直す方式で、履歴は積まない。`GET /engine/analysis_snapshot` / `GET /graph/relation_snapshot`で参照できる)。
 
 `relation_rules.py`の`RELATION_RULES`はタプルキー`(type_a, type_b)`で隣接/接続の距離閾値を定義する。Archicad実データは部屋を`"Room"`ではなく`"Zone"`と呼ぶため、`Room`用ルールと`Zone`用ルールを両方定義してある(`archicad_mcp/tapir.py`のモジュールdocstring参照)。
 
@@ -119,17 +119,23 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 ### ④ 空間関係エンジン
 
 - (2026-08-08対応済み)`calculate_relations()`(`graph/relation.py`)が全要素の総当たり(O(n²))だった問題を、(1)`RELATION_RULES`に登場しない型(Column/Beam/Slab等)の事前除外、(2)`shapely.STRtree`による候補絞り込みの2段階で解消。実データ(5699要素、うち対象1653要素)で約24秒→約0.2秒に短縮。あわせて`database/db.py`の`insert_connection()`を1件ずつ呼んでいた`rebuild_connections()`も、`insert_connections_bulk()`(`executemany`一括書き込み)へ変更(同データで約14秒→約0.3秒)
+- **(2026-08-08対応済み)floorIndexによる階またぎハードフィルタを追加した。** 両要素にfloorIndex(Archicad同期時に必ず記録される、階を表す整数)が揃っている場合、値が異なれば無条件で除外する(z-gapとは別のAND条件)。下記「⑥ 空間知能エンジン」のEV/PS縦シャフト問題の解消策
+- **(2026-08-08対応済み)ドアが実際に接する部屋(Room/Zone)の判定を、距離ベースから壁の所属情報ベースに変更した。** 詳細・実データでの効果は下記「⑥ 空間知能エンジン」参照(`graph/door_ownership.py`)
 
 ### ⑥ 空間知能エンジン
 
 - 空間知能エンジン用(ノード・エッジ)テーブルを作成
 - (2026-08-06時点で対応済み)`analyze_space()`の`issues`は`find_isolated_elements`/`find_degenerate_walls`/`find_ambiguous_door_ownership`(`graph/analyzer.py`)による実質的な検出を返すようになった。`wall_check`/`door_check`もこれらの検出件数を反映する
 - (2026-08-08対応済み)`room_engine.py`(隣室解析)/`evacuation_engine.py`(単一階避難経路解析)/`code_engine.py`(採光有効面積比・バリアフリードア幅の参考値チェック)/`graph/path.py`(経路探索)を追加。`GET /engine/rooms` / `GET /engine/evacuation` / `GET /engine/code/daylighting` / `GET /engine/code/accessible_doors`。詳細と実データでの検証結果は下記「追加モジュール案」の表を参照(表の実現性評価は当時のまま残し、実装後の状況を注記で追記した)
-- **(2026-08-08実データで新規発見)EV/PS等の縦シャフト系Zoneは、階をまたいでz範囲が重なる(隙間ではなく重複)ように登録されている**(例: 実データのEVゾーン、1階分`z:400〜3400`・2階分`z:3300〜6300` — 100mm重複)。`calculate_relations()`のz-gap除外(`MAX_Z_GAP_MM=150`)は「隙間」を前提にしており、この重複ケースは原理的に閾値調整では切り分けられない(隙間が負、つまり重なっているため)。floorIndexを使った階単位のハードフィルタ、またはシャフト系Zoneの特別扱いが必要(未対応。下記の「大分類ゾーン除外」とは別の、より狭い残存課題)
+- **(2026-08-08実データで新規発見・同日対応済み)EV/PS等の縦シャフト系Zoneは、階をまたいでz範囲が重なる(隙間ではなく重複)ように登録されている**(例: 実データのEVゾーン、1階分`z:400〜3400`・2階分`z:3300〜6300` — 100mm重複)。`calculate_relations()`のz-gap除外(`MAX_Z_GAP_MM=150`)は「隙間」を前提にしており、この重複ケースは原理的に閾値調整では切り分けられない(隙間が負、つまり重なっているため)。**対応**: 両要素のfloorIndexが分かる場合はz-gapとは別に一致を必須条件にするハードフィルタを追加した(`graph/relation.py`、上記「④ 空間関係エンジン」参照)
 - **(2026-08-08対応済み・実データで検証・その後テンプレート非依存の判定へ改修)住戸/区画全体を表す大分類ゾーンを実室から除外するようにした。** ユーザー指摘(「部屋名ゾーンの命名で隣接部屋が同じ部屋と誤判定していないか」)を機に実データを詳細検証した結果、当初疑っていた「同名ゾーンの混同」ではなく、**「Cタイプ」のような大分類ゾーン(住戸全体、57.3㎡)が同じ住戸内の実室ゾーン14件(LD・キッチン・トイレ等)を幾何的に100%包含しており、これが実室と同列に扱われていた**ことが根本原因だった(1つのドアが同時に3〜11部屋へ「接続」と誤判定される主因)。
   - **第1版(命名規則ベース、置き換え済み)**: Archicadの「ゾーンカテゴリ」属性(`categoryAttributeId`、名前と位置タブの「カテゴリ」欄)が「大分類(例:住宅)」と番号付きサブタイプ(住宅-1〜6等)の2階層構造で、大分類名(サブタイプ番号なし)のZoneが常に「住戸全体」パターンに一致することを実データで確認し、これを判定根拠にしていた。
   - **第2版(幾何包含ベース、現行)**: 上記の命名規則(大分類/番号付きサブタイプという構成)はArchicadのテンプレートによって書き方が様々でありうるとの指摘を受け、**判定根拠をテンプレートに依存しない幾何包含のみに変更した**(`graph/envelope.py`の`find_envelope_zone_guids()`)。「同一階の他Zoneを`MIN_CONTAINED_COUNT`(=3)件以上、`CONTAINMENT_AREA_RATIO`(=0.8)以上の面積割合で、かつ自身が`MIN_SIZE_RATIO`(=1.3)倍以上大きい面積で包含している」Zoneを大分類ゾーンとみなす。ゾーンカテゴリ名(`properties.zone_category`、`archicad_mcp/tapir.py`の`get_zone_categories()`で解決)は表示用の付随情報として保存するのみで、除外判定には使わない。`calculate_relations()`(`graph/relation.py`)と`find_rooms()`(`graph/room.py`)がこの幾何判定を使う。
   - **実データでの比較検証**(5708要素、再同期): 命名規則ベース(第1版)は35件のZoneを除外し関係件数4847→3344件・外部ドア0→4件・避難経路が届かない部屋157/157→17/122(86%到達可能)。幾何包含ベース(第2版)は14件のみ除外し関係件数4847→3673件・外部ドア0→3件・避難経路が届かない部屋157/157→27/143(81%到達可能)。**幾何判定の方がやや保守的(一部の大分類ゾーンを見逃す)だが、テンプレート非依存という安全性を優先しこの閾値のまま採用した**(閾値の調整は複数の実物件データで比較しないと判断できないため、今回は据え置き。将来別のArchicadプロジェクトで再検証する際の対応方針として記録)。
+- **(2026-08-08対応済み・実データで検証)ドアが実際に接する部屋(Room/Zone)の判定を、距離ベースから壁の所属情報ベースに変更した。** 大分類ゾーン除外後も、Room/Zone-Doorの"connects"(距離閾値700mm)は密集した実データでは1つのドアが同時に3〜11件の部屋へ「接続」と誤判定される問題が残っていた——壁の場合(所属壁は常に距離0mmで一意に決まる)と異なり、部屋の場合は距離を0.5mmまで絞っても3〜6件残ることを実データで確認済み(距離ベースでは原理的に解決不可能)。
+  - Door/Windowの`properties.archicad_details.ownerElementId`(所属壁のGUID、Archicad側の確定情報で幾何推測ではない)を起点に、その壁の両側(厚み方向)にプローブ点を置き、実際にどのRoom/Zoneポリゴンに含まれるか(`polygon.contains(point)`)で判定する方式に変更した(`graph/door_ownership.py`の`find_door_room_guids()`、`graph/relation.py`の`_refine_door_room_connections()`から呼ばれる)。owner壁が特定できないドア(実データでは稀)は従来の距離ベース判定にフォールバックする。
+  - **実装中に新たなバグを作り込み、同日中に発見・修正した**: この点-in-ポリゴン判定はfloorIndexを考慮していなかったため、平面(x,y)上で同じ座標に重なる別階のZone(EV/PS等の縦シャフト、実データで"MB""共用廊下"等の同名Zoneが複数階に重複)まで誤ってヒットしていた。ドアと同じfloorIndexのRoom/Zoneのみを候補にするよう修正(`room_records_by_floor`)。
+  - **実データでの効果**(5708要素、floorIndexフィルタ適用後の最終値): ドアの接続数分布が3〜40件という無秩序な状態から、**1件(31件)・2件(56件)のみ**という建築的に正しいパターン(内部ドア=2部屋、外部ドア=1部屋)に収束した。避難経路が届かない部屋は143室中87室(接続0件の76室の内訳はPS/MB(配管・メーター)/バルコニー(引き戸でWindow扱いの可能性)/屋外階段/EV/前面道路が大半を占め、ドアが存在しないのが自然な場所が中心で、RAG等による用途分類が無い現状では妥当な結果と判断)。
 
 #### 追加モジュール案(2026-08-06 実現可否を調査、2026-08-08 実装)
 
@@ -137,14 +143,14 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 
 | モジュール | 機能 | 実現性(2026-08-06時点の調査) | 前提条件・注意点 |
 |---|---|---|---|
-| `room_engine.py`(旧称`room_analyzer.py`) | 隣室解析 | 即着手可 → **実装済み** | `calculate_relations()`が既に計算するRoom/Zone-Room/Zoneの「adjacent」・Room/Zone-Doorの「connects」をそのまま使う。2026-08-08に幾何包含による大分類ゾーン除外(上記参照)を追加し実データで大幅改善。上記のシャフト系Zoneのz重複(EV/PS)は依然未対応で残存課題 |
+| `room_engine.py`(旧称`room_analyzer.py`) | 隣室解析 | 即着手可 → **実装済み** | `calculate_relations()`が既に計算するRoom/Zone-Room/Zoneの「adjacent」・Room/Zone-Doorの「connects」をそのまま使う。2026-08-08に幾何包含による大分類ゾーン除外・floorIndexハードフィルタ・ドアのowner壁ベース接続判定(いずれも上記参照)を追加し実データで大幅改善 |
 | `space_classifier.py` | 用途分類(居間/寝室/キッチン等) | **要データ品質改善、または⑨(LLM)向き。未着手** | 2026-08-07の再同期データではZone名が`キッチン`/`洋室`/`LD`等の実名になっており(旧サンプルの「全件"ゾーン"」という制約は解消)、名前ベースの分類は現実的になった可能性がある(未検証) |
-| `evacuation_engine.py`(旧称`evacuation.py`) | 避難経路解析 | 単一階なら着手可 → **実装済み(単一階のみ)** | 外部ドアは「Room/Zoneに1つしか"connects"しないDoor」という簡易ヒューリスティックで判定(`find_exterior_doors()`)、経路長は`graph/path.py`でRoom-Doorグラフ上の最短路として計算。**当初、大分類ゾーン(上記参照)を実室と誤って扱っていたため外部ドアが実データで0件と判定されていたが、2026-08-08の大分類ゾーン除外対応(幾何包含ベース)後は外部ドア3件・避難経路が届く部屋143件中116件(81%)に改善**(実データ5708要素で確認)。複数階の避難経路(階段の接続)は実データにStair要素が2件存在するものの、Tapirの`GetDetailsOfElements`がStair型も"Not yet supported element type"を返し詳細取得不可(Line/PolyLine/Textと同種の制約)なため引き続き未対応 |
-| `accessibility.py` | 動線解析 | **着手可。未着手** | 既存グラフ(Room-Door-Room)のトポロジー解析(行き止まり検出、次数の低いハブ部屋の特定など)で実装できる。既存データのみで完結 |
-| (同上、または新規`equipment.py`) | 設備到達性 | **未着手・前提が無い** | 「設備」に該当するAIオブジェクトが実データに無い。Object⇔Roomの関係(点-in-ポリゴンによる「収容」関係で、現行のdistance閾値モデルとは別方式が必要)がRELATION_RULESに無いため、まず関係定義から必要 |
+| `evacuation_engine.py`(旧称`evacuation.py`) | 避難経路解析 | 単一階なら着手可 → **実装済み(単一階のみ)** | 外部ドアは「Room/Zoneに1つしか"connects"しないDoor」という簡易ヒューリスティックで判定(`find_exterior_doors()`)、経路長は`graph/path.py`でRoom-Doorグラフ上の最短路として計算。**2026-08-08の一連の対応(大分類ゾーン除外→floorIndexハードフィルタ→ドアのowner壁ベース接続判定)を経て、外部ドア31件・避難経路が届く部屋143件中56件に到達**(実データ5708要素で確認。届かない87件のうち大半はPS/MB/バルコニー等ドアが無いのが自然な場所)。複数階の避難経路(階段の接続)は実データにStair要素が2件存在するものの、Tapirの`GetDetailsOfElements`がStair型も"Not yet supported element type"を返し詳細取得不可(Line/PolyLine/Textと同種の制約)なため引き続き未対応 |
+| `accessibility.py` | 動線解析 | 着手可 → **実装済み** | 既存グラフ(Room-Door-Room、`graph/path.py`の`walkable_subgraph()`)のトポロジー解析。次数1を行き止まり、次数`HUB_DEGREE_THRESHOLD`(=4)以上をハブ部屋として報告する(`GET /engine/accessibility`)。実データで検証したところ、ハブ部屋の上位が「風除室」「玄関」「管理人室」「廊下」「ホール」となり、建築的に妥当な結果が得られた |
+| (同上、または新規`equipment.py`) | 設備到達性 | **未着手・前提が無い。ただし2026-08-08に状況変化あり** | 実データ再確認で、冷蔵庫・エアコン・室外機・換気扇・洗面化粧台・UB等の家具/設備オブジェクトが存在することを確認(以前の「該当オブジェクトが無い」という記述は古いデータに基づくものだった)。Object⇔Roomの関係(点-in-ポリゴン、`graph/envelope.py`/`graph/door_ownership.py`と同様の幾何手法が転用できる)は未着手。**ただしObjectの座標はTapirの`Get3DBoundingBoxes`矩形近似のみで実アウトラインが無く、実データで幅26m相当の異常なジオメトリを持つ「換気扇」オブジェクトを確認しており、着手前にデータ品質の目視検証が必要** |
 | `code_engine.py`(旧称`building_code.py`) | 法規チェック | 狭く始めるべき、要免責表記 → **実装済み(2項目のみ)** | 採光有効面積比(窓面積/床面積、参考値1/7)とバリアフリー最小ドア幅(参考値0.8m)の2項目のみ実装。窓/ドアの`width`/`height`(`properties.archicad_details`、単位m)とZoneのポリゴン面積(shapely)を使用。**いずれも法的な適合保証ではない参考値である旨をAPIレスポンスの`disclaimer`フィールドに明記**している |
 
-**残る推奨実装順序**: `accessibility.py`(動線解析、データ完備)→`space_classifier.py`(実名Zoneが増えたため再評価)→`building_code.py`の数値ルール追加→設備到達性(Object⇔Room関係の新設が前提のため最後)。いずれも上記のシャフト系Zoneのz重複問題(floorIndexベースのハードフィルタ)を先に解消したほうが結果の信頼性が上がる。
+**残る推奨実装順序**: 設備到達性(`equipment.py`、Objectジオメトリの品質検証が前提)→`space_classifier.py`(実名Zoneが増えたため再評価)→`building_code.py`の数値ルール追加。
 
 ### ⑦ 解析結果ストア
 

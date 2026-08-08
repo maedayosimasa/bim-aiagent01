@@ -1,7 +1,9 @@
 import json
+from collections import defaultdict
 
 from shapely.strtree import STRtree
 
+from .door_ownership import find_door_room_guids
 from .envelope import find_envelope_zone_guids
 from .geometry import parse_geometry, z_gap
 from .relation_rules import RELATION_RULES, RELATION_TARGET_TYPES
@@ -14,6 +16,16 @@ from ..database.db import get_elements
 # 3000mm超)は平面距離に関わらず完全に除外する。RELATION_RULESの
 # max_distance(平面上の許容誤差、例えばWall-Doorで600mm)とは別の軸の
 # 閾値なので、合成せずAND条件として扱う。
+#
+# ただしこのz-gapだけでは切り分けられないケースが実データで見つかった:
+# EV/PS等の縦シャフト系Zoneは、階をまたいでz範囲が「隙間」ではなく
+# 「重複」するように登録されている(例: 1階分z:400〜3400・2階分
+# z:3300〜6300、100mm重複)。隙間が負(=重なっている)場合、z-gapの
+# 閾値をどう調整しても原理的に切り分けられない。そのため、両要素に
+# floorIndex(Archicad同期時に必ず記録される、階を表す整数)が揃っている
+# 場合は、z-gapとは別にfloorIndexそのものの一致も必須条件にする
+# (_floor_index()参照)。z-gapは同一floorIndex内の微小なノイズ(スラブ
+# 厚み等)を許容する役割として引き続き機能する。
 MAX_Z_GAP_MM = 150.0
 
 # RELATION_RULES全体の中で最大のmax_distance(mm)。calculate_relations()が
@@ -39,6 +51,11 @@ def determine_relation(element1, element2, distance):
         return None
 
     return rule["relation"]
+
+
+def _floor_index(element):
+    properties = json.loads(element["properties"] or "{}")
+    return properties.get("floorIndex")
 
 
 def _envelope_zone_guids(elements):
@@ -75,6 +92,101 @@ def _envelope_zone_guids(elements):
         })
 
     return find_envelope_zone_guids(zone_records)
+
+
+def _refine_door_room_connections(elements, relations):
+    """Room/Zone-Doorの"connects"を、ドアのowner壁ベースの精密な判定で置き換える。
+
+    距離ベースの一般的な"connects"判定(RELATION_RULES、閾値700mm)は、
+    密集した実データでは1つのドアが同時に3〜6件以上の部屋へ「接続」と
+    誤判定される問題があった(閾値をどれだけ絞っても解消しない、
+    graph/door_ownership.py参照)。ドアのowner壁が特定できる場合は、
+    その壁の両側の点-in-ポリゴン判定による正確な結果で置き換える。
+    owner壁が特定できないドア(実データでは稀)は、従来の距離ベース
+    判定のまま変更しない(フォールバック)。
+
+    候補となるRoom/Zoneは、ドアと同じfloorIndexのものだけに絞る。これを
+    怠ると、階をまたいで同じXY座標に重なるZone(EV/PS等の縦シャフト、
+    または単に平面上たまたま同じ位置にある別階の部屋)まで点-in-ポリゴン
+    判定でヒットしてしまう(実データで発覚: あるドアのプローブ点が、
+    "MB"や"共用廊下"など複数階にまたがる同名Zoneすべてに"contains"=True
+    となっていた)。
+    """
+
+    doors = [element for element in elements if element["type"] == "Door"]
+
+    if not doors:
+        return relations
+
+    walls_by_guid = {
+        element["guid"]: element for element in elements if element["type"] == "Wall"
+    }
+
+    envelope_guids = _envelope_zone_guids(elements)
+
+    room_records_by_floor = defaultdict(list)
+
+    for element in elements:
+
+        if element["type"] not in ("Zone", "Room") or element["guid"] in envelope_guids:
+            continue
+
+        try:
+            geom, _ = parse_geometry(element["geometry"])
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+
+        if geom.geom_type != "Polygon":
+            continue
+
+        room_records_by_floor[_floor_index(element)].append((element["guid"], geom))
+
+    refined_room_guids = {}
+
+    for door in doors:
+
+        candidate_rooms = room_records_by_floor.get(_floor_index(door), [])
+        result = find_door_room_guids(door, walls_by_guid, candidate_rooms)
+
+        if result is not None:
+            refined_room_guids[door["guid"]] = result
+
+    if not refined_room_guids:
+        return relations
+
+    room_types = {"Zone", "Room"}
+    elements_by_guid = {element["guid"]: element["type"] for element in elements}
+
+    def _is_refined_door_room_connects(relation):
+
+        source, target = relation["source_guid"], relation["target_guid"]
+
+        if relation["relation"] != "connects":
+            return False
+
+        if source in refined_room_guids and elements_by_guid.get(target) in room_types:
+            return True
+
+        if target in refined_room_guids and elements_by_guid.get(source) in room_types:
+            return True
+
+        return False
+
+    relations = [
+        relation for relation in relations
+        if not _is_refined_door_room_connects(relation)
+    ]
+
+    for door_guid, room_guids in refined_room_guids.items():
+        for room_guid in room_guids:
+            relations.append({
+                "source_guid": door_guid,
+                "target_guid": room_guid,
+                "relation": "connects",
+                "distance": 0.0,
+            })
+
+    return relations
 
 
 def calculate_relations():
@@ -115,6 +227,7 @@ def calculate_relations():
     elements = [element for element, _ in parsed]
     parsed_geometries = [geometry for _, geometry in parsed]
     geometries = [geom for geom, _ in parsed_geometries]
+    floor_indices = [_floor_index(element) for element in elements]
 
     tree = STRtree(geometries)
 
@@ -139,6 +252,14 @@ def calculate_relations():
             g1, z1 = parsed_geometries[i]
             g2, z2 = parsed_geometries[j]
 
+            # floorIndexが両方とも分かっていて、かつ異なる場合は無条件で
+            # 除外する(z-gapでは切り分けられない縦シャフト系Zoneのz範囲
+            # 重複対策、MAX_Z_GAP_MMの説明コメント参照)。
+            floor1, floor2 = floor_indices[i], floor_indices[j]
+
+            if floor1 is not None and floor2 is not None and floor1 != floor2:
+                continue
+
             # 高さが離れすぎている(=別の階にある)ペアは、平面上どれだけ
             # 近くても除外する(実データ検証で発覚: 4階建てビルの各階の
             # 同じ位置にある壁が、全ドアと同時に「隣接」と誤判定されて
@@ -159,4 +280,4 @@ def calculate_relations():
                     "distance": distance,
                 })
 
-    return relations
+    return _refine_door_room_connections(elements, relations)

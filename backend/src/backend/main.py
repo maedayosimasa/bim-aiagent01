@@ -11,6 +11,7 @@ from .engine.site import get_site_boundary, get_road_boundaries
 from .engine.room_engine import analyze_room_adjacency
 from .engine.evacuation_engine import find_evacuation_routes
 from .engine.code_engine import check_daylighting, check_accessible_door_width
+from .engine.accessibility import analyze_accessibility
 from .database.db import create_tables
 from .database.db import insert_element
 from mcp.server.transport_security import TransportSecuritySettings
@@ -297,6 +298,12 @@ def engine_code_accessible_doors():
     # 参考値であり法的な適合を保証するものではない(engine/code_engine.py参照)。
 
     return check_accessible_door_width()
+
+
+@app.get("/engine/accessibility")
+def engine_accessibility():
+
+    return analyze_accessibility()
 
 
 # ==============================
