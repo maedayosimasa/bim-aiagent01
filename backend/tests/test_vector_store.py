@@ -101,6 +101,45 @@ def test_default_embedding_function_unknown_backend_raises(monkeypatch):
         vector_store._default_embedding_function()
 
 
+def test_get_collection_resolves_default_embedding_function_when_omitted(
+    chroma_client, monkeypatch
+):
+    # get_collection()にembedding_functionを渡さない(=呼び出し側の既定)
+    # 経路。ONNXモデルのダウンロードを避けるため、KeywordEmbeddingFunction
+    # を使うバックエンドに切り替えた上で確認する。
+    monkeypatch.setenv("CHROMA_EMBEDDING_BACKEND", "keyword")
+
+    collection = vector_store.get_collection(client=chroma_client)
+
+    assert collection.name == vector_store.COLLECTION_NAME
+
+
+def test_get_client_uses_http_client_when_chroma_host_set(monkeypatch):
+    # CHROMA_HOST未設定時(デフォルト)はEphemeralClientを使う経路が
+    # chroma_clientフィクスチャ経由で常に踏まれるが、CHROMA_HOST設定時の
+    # HttpClient経路は別途確認する必要がある。実ネットワーク接続は
+    # 発生させず、コンストラクタ引数だけを検証する。
+    calls = {}
+
+    class _FakeHttpClient:
+        def __init__(self, host, port):
+            calls["host"] = host
+            calls["port"] = port
+
+    monkeypatch.setattr(vector_store.chromadb, "HttpClient", _FakeHttpClient)
+    monkeypatch.setenv("CHROMA_HOST", "chroma.example.com")
+    monkeypatch.setenv("CHROMA_PORT", "9000")
+
+    vector_store.get_client.cache_clear()
+    try:
+        client = vector_store.get_client()
+    finally:
+        vector_store.get_client.cache_clear()
+
+    assert isinstance(client, _FakeHttpClient)
+    assert calls == {"host": "chroma.example.com", "port": 9000}
+
+
 def test_keyword_embedding_function_is_deterministic_across_instances():
     # Uses zlib.crc32 (not the randomized builtin hash()) specifically so
     # this holds across separate processes/restarts, not just within one.

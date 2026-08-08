@@ -79,3 +79,49 @@ def test_sync_endpoint_when_not_configured_returns_400(api_client, monkeypatch):
     response = api_client.post("/archicad/sync", json={"limit": 10})
 
     assert response.status_code == 400
+
+
+def test_geo_location_endpoint(api_client, fake_archicad):
+    response = api_client.get("/archicad/geo_location")
+
+    assert response.status_code == 200
+    assert response.json()["north_degrees"] == 45.0
+
+
+def test_focus_elements_endpoint(api_client, fake_archicad):
+    response = api_client.post(
+        "/archicad/elements/focus", json={"guids": ["guid-1"]}
+    )
+
+    assert response.status_code == 200
+
+
+def test_connection_endpoints(api_client):
+    get_response = api_client.get("/archicad/connection")
+    assert get_response.status_code == 200
+    assert "active_url" in get_response.json()
+
+    post_response = api_client.post("/archicad/connection", json={"url": "local"})
+    assert post_response.status_code == 200
+    assert post_response.json()["connection"]["overridden"] is True
+
+
+def test_run_archicad_action_wraps_runtime_error_as_502(api_client, test_db, monkeypatch):
+    # Tapirツール自体がエラーを返した場合(tapir._call()がRuntimeErrorに
+    # 変換する)、_run_archicad_action()がHTTP 502として伝える経路を確認する。
+    from mcp.server.mcpserver import MCPServer
+
+    failing_server = MCPServer(name="fake-tapir-failing")
+
+    @failing_server.tool(name="GetAllProperties")
+    def get_all_properties(input) -> dict:
+        raise RuntimeError("Tapir側のツール実行失敗を模擬")
+
+    monkeypatch.setattr(
+        archicad_client, "_default_transport",
+        lambda: InMemoryTransport(failing_server),
+    )
+
+    response = api_client.get("/archicad/properties")
+
+    assert response.status_code == 502

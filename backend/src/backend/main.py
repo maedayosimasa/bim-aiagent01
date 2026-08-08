@@ -8,6 +8,9 @@ from .engine.spatial import analyze_space
 from .engine.relation_builder import rebuild_connections
 from .engine.vector_store import index_elements, search_elements
 from .engine.site import get_site_boundary, get_road_boundaries
+from .engine.room_engine import analyze_room_adjacency
+from .engine.evacuation_engine import find_evacuation_routes
+from .engine.code_engine import check_daylighting, check_accessible_door_width
 from .database.db import create_tables
 from .database.db import insert_element
 from mcp.server.transport_security import TransportSecuritySettings
@@ -259,6 +262,41 @@ def rebuild_relations():
         "status": "relations rebuilt",
         "count": len(relations)
     }
+
+
+# ==============================
+# Spatial Intelligence Modules API
+# CLAUDE.md「⑥ 空間知能エンジン」の推奨実装順序に沿った追加モジュール。
+# いずれも既存のcalculate_relations()の結果(SQLiteキャッシュ済み要素から
+# 都度再計算)のみで完結し、新規のArchicad連携は不要。
+# ==============================
+
+@app.get("/engine/rooms")
+def engine_room_adjacency():
+
+    return {"rooms": analyze_room_adjacency()}
+
+
+@app.get("/engine/evacuation")
+def engine_evacuation_routes():
+    # 単一階のみ対応(階段の接続情報が実データに無いため複数階は未対応、
+    # engine/evacuation_engine.py参照)。
+
+    return find_evacuation_routes()
+
+
+@app.get("/engine/code/daylighting")
+def engine_code_daylighting():
+    # 参考値であり法的な適合を保証するものではない(engine/code_engine.py参照)。
+
+    return check_daylighting()
+
+
+@app.get("/engine/code/accessible_doors")
+def engine_code_accessible_doors():
+    # 参考値であり法的な適合を保証するものではない(engine/code_engine.py参照)。
+
+    return check_accessible_door_width()
 
 
 # ==============================

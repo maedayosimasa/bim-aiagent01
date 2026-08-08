@@ -80,6 +80,67 @@ def test_get_road_boundaries_estimates_width_and_centerline(test_db):
     assert ys == {0, 20000}
 
 
+def test_find_zones_by_name_skips_invalid_geometry_json(test_db):
+    # 破損したジオメトリ文字列(実データでの座標欠損等を想定)。名前が
+    # 一致してもジオメトリが解釈できない場合は結果から除外する。
+    test_db.insert_element(
+        "zone_site", "Zone", "敷地",
+        json.dumps({}),
+        "not valid json",
+    )
+
+    assert find_zones_by_name("敷地") == []
+
+
+def test_find_zones_by_name_skips_non_polygon_geometry(test_db):
+    # 敷地・道路のZoneは通常polygonだが、防御的に他の形状も除外する。
+    test_db.insert_element(
+        "zone_site", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "point", "x": 0, "y": 0}),
+    )
+
+    assert find_zones_by_name("敷地") == []
+
+
+def test_get_road_boundaries_handles_degenerate_polygon(test_db):
+    # 3点が一直線上に並ぶなど、面積の無い(退化した)ポリゴン。
+    # minimum_rotated_rectangle()がPolygonではなくLineString等を返す
+    # ケースを、幅員・中心線をNoneにして安全に扱えることを確認する。
+    test_db.insert_element(
+        "zone_road", "Zone", "道路",
+        json.dumps({}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [1000, 0], [2000, 0], [0, 0]],
+        }),
+    )
+
+    roads = get_road_boundaries()
+
+    assert len(roads) == 1
+    assert roads[0]["estimated_width_m"] is None
+    assert roads[0]["estimated_centerline"] is None
+
+
+def test_get_road_boundaries_estimates_width_when_long_edge_comes_first(test_db):
+    # 最小外接矩形の辺の並び順によってはedge_lengths[0]の方が長辺になる
+    # (shapelyの矩形の向きは入力の頂点順とは独立に決まるため)。その場合の
+    # 分岐(if edge_lengths[0] <= edge_lengths[1])を確認する。
+    test_db.insert_element(
+        "zone_road", "Zone", "道路",
+        json.dumps({}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [20000, 0], [20000, 6000], [0, 6000]],
+        }),
+    )
+
+    roads = get_road_boundaries()
+
+    assert roads[0]["estimated_width_m"] == 6.0
+
+
 def test_get_road_boundaries_supports_multiple_roads(test_db):
     # 角地など、道路が複数本ある場合も全件返す。
     test_db.insert_element(

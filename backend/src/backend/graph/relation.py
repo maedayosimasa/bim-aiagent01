@@ -1,5 +1,7 @@
+from shapely.strtree import STRtree
+
 from .geometry import parse_geometry, z_gap
-from .relation_rules import RELATION_RULES
+from .relation_rules import RELATION_RULES, RELATION_TARGET_TYPES
 from ..database.db import get_elements
 
 
@@ -10,6 +12,11 @@ from ..database.db import get_elements
 # max_distance(平面上の許容誤差、例えばWall-Doorで600mm)とは別の軸の
 # 閾値なので、合成せずAND条件として扱う。
 MAX_Z_GAP_MM = 150.0
+
+# RELATION_RULES全体の中で最大のmax_distance(mm)。calculate_relations()が
+# shapely.STRtreeへ候補を問い合わせる際のバッファ半径として使う——これより
+# 厳密な、ペアの型ごとの閾値は従来通りdetermine_relation()側で判定する。
+_GLOBAL_MAX_DISTANCE_MM = max(rule["max_distance"] for rule in RELATION_RULES.values())
 
 
 def determine_relation(element1, element2, distance):
@@ -32,29 +39,55 @@ def determine_relation(element1, element2, distance):
 
 
 def calculate_relations():
+    """要素間の空間関係(隣接/接続)を計算する。
 
-    elements = get_elements()
+    以前は全要素の全ペア(O(n²))を毎回計算しており、実データ5699要素で
+    約24秒かかっていた(CLAUDE.md「④ 空間関係エンジン」参照)。2段階で
+    候補を絞り込むことで高速化する:
+    (1) RELATION_RULESにどの組み合わせでも登場しない型(Column/Beam/Slab/
+        Object等)は絶対に関係を持ち得ないため、あらかじめ除外する
+        (実データ5699要素のうち対象は1653要素のみ)。
+    (2) 残った要素同士もshapely.STRtree(空間インデックス)で近傍候補だけに
+        絞ってから、厳密な距離計算・determine_relation()判定を行う。
+    """
+
+    elements = [
+        element for element in get_elements()
+        if element["type"] in RELATION_TARGET_TYPES
+    ]
 
     # 幾何は要素ごとに一度だけパースする(内側ループのたびに同じ要素の
     # ジオメトリを再パースしていた既存の無駄を避ける)。
     parsed_geometries = [parse_geometry(element["geometry"]) for element in elements]
+    geometries = [geom for geom, _ in parsed_geometries]
+
+    tree = STRtree(geometries)
 
     relations = []
 
-    for i in range(len(elements)):
+    for i, geom in enumerate(geometries):
 
-        for j in range(i + 1, len(elements)):
+        # 自分自身より後ろ(j > i)の候補だけを見ることで、各ペアを一度だけ
+        # 処理する(STRtreeは自分自身や既に処理済みのjも返してくるため)。
+        candidate_indices = tree.query(
+            geom.buffer(_GLOBAL_MAX_DISTANCE_MM), predicate="intersects"
+        )
 
-            e1 = elements[i]
-            e2 = elements[j]
+        for j in candidate_indices:
 
+            j = int(j)
+
+            if j <= i:
+                continue
+
+            e1, e2 = elements[i], elements[j]
             g1, z1 = parsed_geometries[i]
             g2, z2 = parsed_geometries[j]
 
             # 高さが離れすぎている(=別の階にある)ペアは、平面上どれだけ
-            # 近くても最初から候補から除外する(実データ検証で発覚: 4階建て
-            # ビルの各階の同じ位置にある壁が、全ドアと同時に「隣接」と
-            # 誤判定されていた)。距離自体は従来通り平面(x,y)上の距離のみ。
+            # 近くても除外する(実データ検証で発覚: 4階建てビルの各階の
+            # 同じ位置にある壁が、全ドアと同時に「隣接」と誤判定されて
+            # いた)。距離自体は従来通り平面(x,y)上の距離のみ。
             if z_gap(z1, z2) > MAX_Z_GAP_MM:
                 continue
 

@@ -141,6 +141,23 @@ def test_find_degenerate_walls_ignores_normal_wall(sample_elements):
     assert find_degenerate_walls(graph) == []
 
 
+def test_find_degenerate_walls_reports_invalid_geometry_json(test_db):
+    # 破損したジオメトリ文字列(実データでの座標欠損等を想定)も、
+    # 長さ0と同様に「ジオメトリ不正」として報告する。
+    test_db.insert_element(
+        "wall_broken", "Wall", "壊れた壁",
+        json.dumps({}),
+        "not valid json",
+    )
+
+    graph = build_graph()
+
+    issues = find_degenerate_walls(graph)
+
+    assert len(issues) == 1
+    assert issues[0]["element_guid"] == "wall_broken"
+
+
 def test_find_ambiguous_door_ownership_reports_door_near_two_walls(sample_elements):
     # wall001(x=4000)に加え、door001(4000,1500)からわずか20mmしか離れて
     # いないwall002(x=4020)を追加する。DOOR_OWNER_MAX_DISTANCE_MM(50mm)

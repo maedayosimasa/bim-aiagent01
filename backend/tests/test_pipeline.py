@@ -18,6 +18,20 @@ def test_analyze_space_counts_zone_elements_as_rooms(test_db):
     assert result["elements"]["rooms"] == 1
 
 
+def test_analyze_space_counts_windows(sample_elements):
+    # sample_elementsには窓が無いため、analyze_space()の要素分類がWindow型を
+    # 正しく数えることを別途確認する。
+    sample_elements.insert_element(
+        "window001", "Window", "窓",
+        json.dumps({"width": 900, "height": 1200}),
+        json.dumps({"type": "point", "x": 4000, "y": 500}),
+    )
+
+    result = analyze_space("test-model")
+
+    assert result["elements"]["windows"] == 1
+
+
 def test_analyze_space_end_to_end(sample_elements):
     # analyze_space() must rebuild connections itself, not rely on a
     # previous manual rebuild - otherwise the graph always has 0 edges.

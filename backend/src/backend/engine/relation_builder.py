@@ -2,7 +2,7 @@ from ..graph.relation import calculate_relations
 
 from ..database.db import (
     clear_connections,
-    insert_connection,
+    insert_connections_bulk,
     get_elements,
     save_graph_relation_results,
 )
@@ -16,19 +16,7 @@ def rebuild_connections():
 
     relations = calculate_relations()
 
-    for relation in relations:
-
-        insert_connection(
-
-            relation["source_guid"],
-
-            relation["target_guid"],
-
-            relation["relation"],
-
-            relation["distance"]
-
-        )
+    insert_connections_bulk(relations)
 
     print(
         f"{len(relations)} connections created."

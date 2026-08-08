@@ -126,3 +126,22 @@ def test_calculate_relations_connects_when_z_ranges_overlap(test_db):
     }
 
     assert by_pair[("wall_a", "door_a")] == "adjacent"
+
+
+def test_calculate_relations_excludes_non_target_types_even_when_touching(test_db):
+    # calculate_relations()はSTRtreeへ問い合わせる前に、RELATION_RULESに
+    # 一切登場しない型(Column等)を候補から除外する(実データ5699要素の
+    # うち対象は1653要素のみに絞る性能最適化)。幾何的に完全に重なって
+    # いても関係を持たないことを確認する。
+    test_db.insert_element(
+        "wall001", "Wall", "壁",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+    )
+    test_db.insert_element(
+        "column001", "Column", "柱",
+        json.dumps({}),
+        json.dumps({"type": "point", "x": 0, "y": 0}),
+    )
+
+    assert calculate_relations() == []

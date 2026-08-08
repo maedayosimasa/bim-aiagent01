@@ -331,48 +331,47 @@ def get_connections():
 
     return rows
 
-def insert_connection(
-    source_guid,
-    target_guid,
-    relation,
-    distance
-    ):
+def insert_connections_bulk(relations):
+    """複数件の関係をまとめて1コネクション・1トランザクションで書き込む。
 
-    conn=get_connection()
+    以前はrelation件数分ループしてSQLite接続を1件ずつopen/commit/close
+    していたが、実データ(bim_cache.db、4847件)ではこれだけで約14秒
+    かかっていた(計算自体はSTRtree化済みで0.2秒程度、ボトルネックは
+    DB書き込み側だった)。save_graph_relation_results()と同じく
+    executemany()でまとめて書き込む。
 
-    cursor=conn.cursor()
+    relationsは{source_guid, target_guid, relation, distance}を持つ
+    dictのリスト。
+    """
 
+    if not relations:
+        return
 
-    cursor.execute(
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.executemany(
         """
         INSERT INTO connections
-        (
-        source_guid,
-        target_guid,
-        relation,
-        distance
-        )
-
-        VALUES
-        (
-        ?,
-        ?,
-        ?,
-        ?
-        )
+        (source_guid, target_guid, relation, distance)
+        VALUES (?, ?, ?, ?)
         """,
-        (
-        source_guid,
-        target_guid,
-        relation,
-        distance
-        )
+        [
+            (
+                relation["source_guid"],
+                relation["target_guid"],
+                relation["relation"],
+                relation["distance"],
+            )
+            for relation in relations
+        ],
     )
-
 
     conn.commit()
 
     conn.close()
+
 
 def clear_connections():
 

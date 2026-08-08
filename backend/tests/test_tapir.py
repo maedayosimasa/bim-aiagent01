@@ -456,3 +456,54 @@ def test_bounding_box_to_geometry_handles_missing_box():
         "x": 0,
         "y": 0,
     }
+
+
+def test_z_range_from_bounding_box_returns_empty_when_box_missing():
+    # details_to_geometry()は、Get3DBoundingBoxesが対応していない要素型
+    # (Text/Dimension等、"error"だけを返す)に対してもこの関数を呼ぶため、
+    # boundingBox3Dキー自体が無いケースを個別に扱える必要がある。
+    assert tapir._z_range_from_bounding_box({"error": "Not yet supported element type"}) == {}
+
+
+def test_call_returns_structured_content_when_present(monkeypatch):
+    # 自前のMCPサーバー(mcp SDKベース)はstructured_contentを常に返すが、
+    # 既存テストのフェイクサーバー(fastmcpベース)はこれを保証しないため、
+    # テキストcontentへのフォールバック経路(_call()の後半)しか
+    # これまで踏んでいなかった。structured_contentがある場合の経路を
+    # 直接確認する。
+    from backend.archicad_mcp import client as archicad_client
+
+    class _FakeResult:
+        is_error = False
+        structured_content = {"elements": ["fake"]}
+        content = []
+
+    async def fake_call_tool(name, arguments, transport=None):
+        return _FakeResult()
+
+    monkeypatch.setattr(archicad_client, "call_tool", fake_call_tool)
+
+    result = _run(tapir._call("SomeCommand"))
+
+    assert result == {"elements": ["fake"]}
+
+
+def test_select_elements_returns_empty_results_when_nothing_to_change():
+    # 現在の選択も新規選択も両方空の場合、Tapirへ問い合わせるまでもなく
+    # 空の実行結果を即座に返す(_make_fake_tapir_server()のGetSelected
+    # Elementsは常にguid-1を返すため、既存テストではこの分岐に到達
+    # できない)。
+    empty_selection_server = MCPServer(name="fake-tapir-empty-selection")
+
+    @empty_selection_server.tool(name="GetSelectedElements")
+    def get_selected_elements(input) -> dict:
+        return {"elements": []}
+
+    transport = InMemoryTransport(empty_selection_server)
+
+    result = _run(tapir.select_elements([], transport=transport))
+
+    assert result == {
+        "executionResultsOfAddToSelection": [],
+        "executionResultsOfRemoveFromSelection": [],
+    }

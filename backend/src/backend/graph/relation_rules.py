@@ -47,3 +47,13 @@ RELATION_RULES = {
     # エッジでグラフが埋まるため。部屋の接続情報はRoom/Zone-Door経由で
     # 表現する(test_relation.pyのtest_calculate_relations_uses_rules_per_type_pair参照)。
 }
+
+
+# RELATION_RULESに登場する要素タイプの集合。Column/Beam/Slabなど関係計算の
+# 対象外タイプはRELATION_RULESにどの組み合わせでも登場しないため、絶対に
+# 関係(エッジ)を持ち得ない。graph/relation.pyのcalculate_relations()は
+# これを使って候補から事前に除外し(実データ5699要素のうち対象は1653要素
+# のみ)、graph/analyzer.pyはconnected判定や孤立要素検出の対象タイプ判定に
+# 使う。両モジュールが別々に定義すると値がずれた際に検出漏れが起きるため
+# (Windowにルールが無かった過去の不具合と同種)、ここで一元管理する。
+RELATION_TARGET_TYPES = {element_type for pair in RELATION_RULES for element_type in pair}

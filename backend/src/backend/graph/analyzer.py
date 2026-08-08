@@ -3,15 +3,12 @@ import json
 import networkx as nx
 
 from .geometry import geometry_from_json
-from .relation_rules import RELATION_RULES
+from .relation_rules import RELATION_TARGET_TYPES
 
-
-# RELATION_RULESに登場する要素タイプの集合。Column/Beam/Slabなど関係計算の
-# 対象外タイプはRELATION_RULESにどの組み合わせでも登場しないため、
-# calculate_relations()側で永遠にエッジを持てず孤立ノードのまま残る。
-# connected判定にこれらを含めてしまうと、壁/部屋/ドア/窓が完全に連結して
-# いても対象外ノードのせいで常にFalseになってしまうため、判定対象から除く。
-RELATION_TARGET_TYPES = {element_type for pair in RELATION_RULES for element_type in pair}
+# RELATION_TARGET_TYPESの定義・由来はrelation_rules.py参照(calculate_
+# relations()と定義を共有する)。connected判定にこれらの対象外ノードを
+# 含めてしまうと、壁/部屋/ドア/窓が完全に連結していても対象外ノードの
+# せいで常にFalseになってしまうため、判定対象から除く。
 
 
 def analyze_graph(graph):
@@ -36,31 +33,6 @@ def analyze_graph(graph):
 
     }
 
-
-
-def graph_summary(graph):
-
-    rooms = []
-
-    for node, data in graph.nodes(data=True):
-
-        if data.get("type") == "Room":
-
-            rooms.append(node)
-
-
-    return {
-
-        "nodes":
-            graph.number_of_nodes(),
-
-        "edges":
-            graph.number_of_edges(),
-
-        "rooms":
-            rooms
-
-    }
 
 
 # 隣接/接続関係を一つも持たない主要建築要素(壁・部屋・ドア・窓)を報告する
