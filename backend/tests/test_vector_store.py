@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from backend.engine import vector_store
@@ -45,6 +47,31 @@ def test_index_elements_with_no_data_returns_zero(test_db, chroma_client, fake_e
     count = index_elements(client=chroma_client, embedding_function=fake_embedding_function)
 
     assert count == 0
+
+
+def test_index_elements_splits_into_batches_when_exceeding_batch_size(
+    test_db, chroma_client, fake_embedding_function, monkeypatch
+):
+    # 実データ検証で発覚した不具合の再現: ChromaDBは1回のupsert()で送れる
+    # 件数に上限があり(実データ5708要素で上限5461件を超えInternalError
+    # になっていた)、超える場合は分割して送らなければならない。
+    monkeypatch.setattr(vector_store, "_UPSERT_BATCH_SIZE", 2)
+
+    for i in range(5):
+        test_db.insert_element(
+            f"wall{i}", "Wall", f"壁{i}",
+            json.dumps({}),
+            json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+        )
+
+    count = index_elements(client=chroma_client, embedding_function=fake_embedding_function)
+
+    assert count == 5
+
+    collection = chroma_client.get_or_create_collection(
+        vector_store.COLLECTION_NAME, embedding_function=fake_embedding_function
+    )
+    assert collection.count() == 5
 
 
 def test_search_elements_finds_relevant_element_by_text(

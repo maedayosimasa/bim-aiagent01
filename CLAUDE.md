@@ -161,6 +161,7 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 
 - `/bim/index`が手動呼び出しのみで、`sync_from_archicad()`や`rebuild_connections()`の後に自動実行されない。同期後にベクトルインデックスが古いまま放置され得る
 - 埋め込み対象が要素単位の短い説明文のみ(`engine/vector_store.py`の`_describe_element()`)。部屋ごとに周辺要素をまとめた文書など、RAGでの検索精度を上げるチャンク戦略は未検討
+- **(2026-08-08発見・同日修正)フロントエンド「要素同期」タブの「検索インデックス化」ボタン(`POST /bim/index`)が実データで500エラーになるバグがあった。** `index_elements()`(`engine/vector_store.py`)がChromaDBの`collection.upsert()`を全要素一括(5708件)で呼んでいたが、ChromaDBには1回のupsertで送れる件数に上限があり(実測5461件)、これを超えると`chromadb.errors.InternalError`("Batch size of N is greater than max batch size of M")になっていた。ユーザーが敷地/道路Zoneを追加して要素数が上限を超えたことで、このセッション中に初めて顕在化した。`_UPSERT_BATCH_SIZE = 1000`で固定サイズに分割して複数回に分けてupsertするよう修正し、実データ(5708要素)で全件インデックス化・意味検索(`/bim/search`)の動作を確認済み
 
 ### ⑨ RAG / AIエージェント層(最大のギャップ、実質未着手)
 

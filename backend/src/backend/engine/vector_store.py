@@ -153,6 +153,14 @@ def _relations_by_guid():
     return relations_by_guid
 
 
+# ChromaDBは1回のupsert()で送れる件数に上限がある(バックエンドの実装
+# 依存、実データ5708要素で実測した上限は5461件)。上限を超えて送ると
+# "Batch size of N is greater than max batch size of M"という
+# chromadb.errors.InternalErrorになることを実データで確認した。
+# 具体的な上限値に依存せず安全な固定サイズに分割して複数回に分けて送る。
+_UPSERT_BATCH_SIZE = 1000
+
+
 def index_elements(client=None, embedding_function=None):
     collection = get_collection(client, embedding_function)
 
@@ -172,7 +180,13 @@ def index_elements(client=None, embedding_function=None):
         for element in elements
     ]
 
-    collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+    for start in range(0, len(ids), _UPSERT_BATCH_SIZE):
+        end = start + _UPSERT_BATCH_SIZE
+        collection.upsert(
+            ids=ids[start:end],
+            documents=documents[start:end],
+            metadatas=metadatas[start:end],
+        )
 
     return len(ids)
 
