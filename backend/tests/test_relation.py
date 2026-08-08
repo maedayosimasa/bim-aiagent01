@@ -145,3 +145,24 @@ def test_calculate_relations_excludes_non_target_types_even_when_touching(test_d
     )
 
     assert calculate_relations() == []
+
+
+def test_calculate_relations_excludes_envelope_zones(test_db):
+    # 住戸/区画全体を表す大分類ゾーン("Cタイプ"等、properties.zone_is_
+    # envelope=True)は実室ではないため、他のZoneと幾何的に重なっていても
+    # 隣接/接続関係を持たない(実データ検証で発覚: 1つの大分類ゾーンが
+    # 同じ住戸内の実室十数件を幾何包含し、ドアが同時に多数の部屋へ
+    # 「接続」と誤判定されていた。archicad_mcp/tapir.pyの
+    # envelope_zone_category_names()参照)。
+    test_db.insert_element(
+        "room001", "Zone", "LD",
+        json.dumps({"zone_category": "住宅-1", "zone_is_envelope": False}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]]}),
+    )
+    test_db.insert_element(
+        "envelope001", "Zone", "Cタイプ",
+        json.dumps({"zone_category": "住宅", "zone_is_envelope": True}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]]}),
+    )
+
+    assert calculate_relations() == []

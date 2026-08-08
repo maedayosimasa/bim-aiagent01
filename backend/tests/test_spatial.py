@@ -25,6 +25,26 @@ def test_find_rooms_includes_zone_type(test_db):
     assert set(find_rooms(graph)) == {"zone001"}
 
 
+def test_find_rooms_excludes_envelope_zones(test_db):
+    # 住戸/区画全体を表す大分類ゾーン("Cタイプ"等、properties.zone_is_
+    # envelope=True)は実室ではないため除外する(実データ検証で発覚:
+    # archicad_mcp/tapir.pyのenvelope_zone_category_names()参照)。
+    test_db.insert_element(
+        "room001", "Zone", "LD",
+        json.dumps({"zone_category": "住宅-1", "zone_is_envelope": False}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [1000, 0], [1000, 1000], [0, 1000]]}),
+    )
+    test_db.insert_element(
+        "envelope001", "Zone", "Cタイプ",
+        json.dumps({"zone_category": "住宅", "zone_is_envelope": True}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [5000, 0], [5000, 5000], [0, 5000]]}),
+    )
+
+    graph = build_graph()
+
+    assert find_rooms(graph) == ["room001"]
+
+
 def test_find_nodes_by_type(sample_elements):
     graph = build_graph()
 

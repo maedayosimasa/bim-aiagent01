@@ -1,3 +1,5 @@
+import json
+
 from shapely.strtree import STRtree
 
 from .geometry import parse_geometry, z_gap
@@ -38,6 +40,25 @@ def determine_relation(element1, element2, distance):
     return rule["relation"]
 
 
+def _is_envelope_zone(element):
+    """住戸/区画全体を表す大分類ゾーン(実室ではない)かどうかを返す。
+
+    sync_from_archicad()がproperties.zone_is_envelopeとして事前に判定・
+    保存済みの値をそのまま使う(archicad_mcp/tapir.pyのenvelope_zone_
+    category_names()参照)。実データ検証で、こうした大分類Zone("Cタイプ"
+    等)が同じ住戸内の実室Zone十数件を幾何的に包含しており、これを実室と
+    同列に扱うと1つのドア/壁が同時に多数のZoneへ「隣接」「接続」と誤判定
+    される不具合があった。
+    """
+
+    if element["type"] not in ("Zone", "Room"):
+        return False
+
+    properties = json.loads(element["properties"] or "{}")
+
+    return bool(properties.get("zone_is_envelope"))
+
+
 def calculate_relations():
     """要素間の空間関係(隣接/接続)を計算する。
 
@@ -45,8 +66,9 @@ def calculate_relations():
     約24秒かかっていた(CLAUDE.md「④ 空間関係エンジン」参照)。2段階で
     候補を絞り込むことで高速化する:
     (1) RELATION_RULESにどの組み合わせでも登場しない型(Column/Beam/Slab/
-        Object等)は絶対に関係を持ち得ないため、あらかじめ除外する
-        (実データ5699要素のうち対象は1653要素のみ)。
+        Object等)、および住戸全体を表す大分類ゾーン(_is_envelope_zone()
+        参照)は絶対に(あるいは実室として)関係を持つべきではないため、
+        あらかじめ除外する(実データ5699要素のうち対象は1653要素のみ)。
     (2) 残った要素同士もshapely.STRtree(空間インデックス)で近傍候補だけに
         絞ってから、厳密な距離計算・determine_relation()判定を行う。
     """
@@ -54,6 +76,7 @@ def calculate_relations():
     elements = [
         element for element in get_elements()
         if element["type"] in RELATION_TARGET_TYPES
+        and not _is_envelope_zone(element)
     ]
 
     # 幾何は要素ごとに一度だけパースする(内側ループのたびに同じ要素の

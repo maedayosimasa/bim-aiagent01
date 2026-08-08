@@ -1,3 +1,4 @@
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -102,7 +103,7 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 ### ① データ取得層
 
 - 空間知能エンジンの解析(避難経路解析・法規チェック等)には敷地境界線・道路幅員・道路中心線・方位が必要だが、現状Tapir(archicad-mcp)経由の取得手段には制約がある。2026-08-08時点の対応状況:
-  - 敷地境界線・道路: Archicadに専用の要素タイプが無いため、Zoneに用途名(「敷地」「道路」等)を付けて登録する運用を前提に`engine/site.py`で名前検索により暫定対応(`GET /site/boundary`, `GET /site/roads`)。道路幅員・道路中心線はZoneポリゴンの最小外接矩形から幾何的に算出した近似値であり、実測値・設計値そのものではない。
+  - 敷地境界線・道路: Archicadに専用の要素タイプが無いため、Zoneに用途名(「敷地」「道路」等)を付けて登録する運用を前提に`engine/site.py`で名前検索により暫定対応(`GET /site/boundary`, `GET /site/roads`)。道路幅員・道路中心線はZoneポリゴンの最小外接矩形から幾何的に算出した近似値であり、実測値・設計値そのものではない。**(2026-08-08実データで動作確認済み)** ユーザーが実際に「敷地境界線」「前面道路」という名前のZoneをArchicadへ追加して再同期した結果、`GET /site/boundary`/`GET /site/roads`が正しくヒットすることを確認した(道路幅員は実測と近い6.0mと算出)。
   - 方位: Tapirの`GetGeoLocation`コマンド(`projectLocation.north`、ラジアン)を`GET /archicad/geo_location`で都度取得する形で対応済み。
   - **既知の制約(Windows側の実ソース`archicad-mcp/src/tapir/command_definitions.js`/`common_schema_definitions.js`で確認済み、推測ではない)**: Tapirの`GetDetailsOfElements`が実形状/内容を返せる要素タイプはWall/Beam/Slab/Column/Object/Zone/CurtainWall/Meshのみ。Line/PolyLine/Hatchは実座標列を取得できず`Get3DBoundingBoxes`によるバウンディングボックス矩形近似にしかならず(非直交な線分では誤った形状になる)、Text/Dimensionは`{"error": "Not yet supported element type"}`が返り内容を一切取得できない。そのため敷地境界線・道路がLine/PolyLineとして描かれている場合や、道路幅員がテキスト注記としてのみ記載されている場合は現状取得不可能(`engine/site.py`はこの制約により、敷地・道路がZoneとしてモデリングされている前提でしか動作しない)。
   - **今後の対応方針**: この不足分を埋めるには、現在のMCPサーバー(archicad-mcp、Tapir Add-on経由)とは別経路で、Archicad純正のAPI(C++ Add-On等)を使ってLine/PolyLineの実座標列やTextの表示文字列を直接取得するアドオンを別途開発する必要がある。開発時間の制約により今回は見送り、後日対応とする。
@@ -124,7 +125,11 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 - 空間知能エンジン用(ノード・エッジ)テーブルを作成
 - (2026-08-06時点で対応済み)`analyze_space()`の`issues`は`find_isolated_elements`/`find_degenerate_walls`/`find_ambiguous_door_ownership`(`graph/analyzer.py`)による実質的な検出を返すようになった。`wall_check`/`door_check`もこれらの検出件数を反映する
 - (2026-08-08対応済み)`room_engine.py`(隣室解析)/`evacuation_engine.py`(単一階避難経路解析)/`code_engine.py`(採光有効面積比・バリアフリードア幅の参考値チェック)/`graph/path.py`(経路探索)を追加。`GET /engine/rooms` / `GET /engine/evacuation` / `GET /engine/code/daylighting` / `GET /engine/code/accessible_doors`。詳細と実データでの検証結果は下記「追加モジュール案」の表を参照(表の実現性評価は当時のまま残し、実装後の状況を注記で追記した)
-- **(2026-08-08実データで新規発見)EV/PS等の縦シャフト系Zoneは、階をまたいでz範囲が重なる(隙間ではなく重複)ように登録されている**(例: 実データのEVゾーン、1階分`z:400〜3400`・2階分`z:3300〜6300` — 100mm重複)。`calculate_relations()`のz-gap除外(`MAX_Z_GAP_MM=150`)は「隙間」を前提にしており、この重複ケースは原理的に閾値調整では切り分けられない(隙間が負、つまり重なっているため)。結果として`room_engine.py`の隣室解析でPS/EV等が階をまたいで大量に「隣接」判定される、`evacuation_engine.py`の外部ドア判定(Room/Zoneに1つしか繋がらないDoor)が実データでは1件もヒットしない(全ドアがRoom/Zoneに2〜17件接続していた)などの形で表面化する。floorIndexを使った階単位のハードフィルタ、またはシャフト系Zoneの特別扱いが必要(未対応)
+- **(2026-08-08実データで新規発見)EV/PS等の縦シャフト系Zoneは、階をまたいでz範囲が重なる(隙間ではなく重複)ように登録されている**(例: 実データのEVゾーン、1階分`z:400〜3400`・2階分`z:3300〜6300` — 100mm重複)。`calculate_relations()`のz-gap除外(`MAX_Z_GAP_MM=150`)は「隙間」を前提にしており、この重複ケースは原理的に閾値調整では切り分けられない(隙間が負、つまり重なっているため)。floorIndexを使った階単位のハードフィルタ、またはシャフト系Zoneの特別扱いが必要(未対応。下記の「大分類ゾーン除外」とは別の、より狭い残存課題)
+- **(2026-08-08対応済み・実データで検証)Zoneの「ゾーンカテゴリ」属性(Archicad「名前と位置」タブの「カテゴリ」欄)を使って、住戸/区画全体を表す大分類ゾーンを実室から除外するようにした。** ユーザー指摘(「部屋名ゾーンの命名で隣接部屋が同じ部屋と誤判定していないか」)を機に実データを詳細検証した結果、当初疑っていた「同名ゾーンの混同」ではなく、**「Cタイプ」のような大分類ゾーン(住戸全体、57.3㎡)が同じ住戸内の実室ゾーン14件(LD・キッチン・トイレ等)を幾何的に100%包含しており、これが実室と同列に扱われていた**ことが根本原因だった(1つのドアが同時に3〜11部屋へ「接続」と誤判定される主因)。Archicadのゾーンカテゴリは「大分類(例:住宅)」と番号付きサブタイプ(住宅-1〜6等)の2階層構造で、大分類名(サブタイプ番号なし)のZoneが常にこの「住戸全体」パターンに一致することを確認済み。
+  - `archicad_mcp/tapir.py`の`get_zone_categories()`(`GetAttributesByType(attributeType="ZoneCategory")`)でカテゴリ一覧を取得し、`envelope_zone_category_names()`でカテゴリ名のみから大分類名を機械的に導出(ハードコードではない、実データ35件のカテゴリで検証済み)。
+  - `sync_from_archicad()`がZoneの`categoryAttributeId`をこのカテゴリ名に解決し、`properties.zone_category`/`properties.zone_is_envelope`として保存。`calculate_relations()`(`graph/relation.py`)と`find_rooms()`(`graph/room.py`)がこれを見て大分類ゾーンを候補から除外する。
+  - **実データ再同期での効果**(5708要素): 関係(connections)件数4847→**3344件**、避難経路の外部ドア判定0件→**4件**、避難経路が届かない部屋157/157(全滅)→**17/122**(86%が到達可能に)。`evacuation_engine.py`が実データで初めて意味のある結果を返すようになった。
 
 #### 追加モジュール案(2026-08-06 実現可否を調査、2026-08-08 実装)
 
@@ -132,9 +137,9 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 
 | モジュール | 機能 | 実現性(2026-08-06時点の調査) | 前提条件・注意点 |
 |---|---|---|---|
-| `room_engine.py`(旧称`room_analyzer.py`) | 隣室解析 | 即着手可 → **実装済み** | `calculate_relations()`が既に計算するRoom/Zone-Room/Zoneの「adjacent」・Room/Zone-Doorの「connects」をそのまま使う。実データで動作確認済みだが、上記のシャフト系Zoneのz重複により隣接件数が過大に出るケースあり |
+| `room_engine.py`(旧称`room_analyzer.py`) | 隣室解析 | 即着手可 → **実装済み** | `calculate_relations()`が既に計算するRoom/Zone-Room/Zoneの「adjacent」・Room/Zone-Doorの「connects」をそのまま使う。2026-08-08にゾーンカテゴリによる大分類ゾーン除外(上記参照)を追加し実データで大幅改善。上記のシャフト系Zoneのz重複(EV/PS)は依然未対応で残存課題 |
 | `space_classifier.py` | 用途分類(居間/寝室/キッチン等) | **要データ品質改善、または⑨(LLM)向き。未着手** | 2026-08-07の再同期データではZone名が`キッチン`/`洋室`/`LD`等の実名になっており(旧サンプルの「全件"ゾーン"」という制約は解消)、名前ベースの分類は現実的になった可能性がある(未検証) |
-| `evacuation_engine.py`(旧称`evacuation.py`) | 避難経路解析 | 単一階なら着手可 → **実装済み(単一階のみ)** | 外部ドアは「Room/Zoneに1つしか"connects"しないDoor」という簡易ヒューリスティックで判定(`find_exterior_doors()`)、経路長は`graph/path.py`でRoom-Doorグラフ上の最短路として計算。**実データでは上記のシャフト系Zoneのz重複により外部ドアが0件と判定された**(全ドアが2件以上のRoom/Zoneに繋がっていたため)。複数階の避難経路(階段の接続)は実データにStair要素が2件存在する(2026-08-07再同期で新たに確認、旧サンプルでは0件だった)ものの、Stair用の関係ルールが未整備のため引き続き未対応 |
+| `evacuation_engine.py`(旧称`evacuation.py`) | 避難経路解析 | 単一階なら着手可 → **実装済み(単一階のみ)** | 外部ドアは「Room/Zoneに1つしか"connects"しないDoor」という簡易ヒューリスティックで判定(`find_exterior_doors()`)、経路長は`graph/path.py`でRoom-Doorグラフ上の最短路として計算。**当初、大分類ゾーン(上記参照)を実室と誤って扱っていたため外部ドアが実データで0件と判定されていたが、2026-08-08のゾーンカテゴリ除外対応後は外部ドア4件・避難経路が届く部屋122件中105件(86%)に改善**(実データ5708要素で確認)。複数階の避難経路(階段の接続)は実データにStair要素が2件存在するものの、Tapirの`GetDetailsOfElements`がStair型も"Not yet supported element type"を返し詳細取得不可(Line/PolyLine/Textと同種の制約)なため引き続き未対応 |
 | `accessibility.py` | 動線解析 | **着手可。未着手** | 既存グラフ(Room-Door-Room)のトポロジー解析(行き止まり検出、次数の低いハブ部屋の特定など)で実装できる。既存データのみで完結 |
 | (同上、または新規`equipment.py`) | 設備到達性 | **未着手・前提が無い** | 「設備」に該当するAIオブジェクトが実データに無い。Object⇔Roomの関係(点-in-ポリゴンによる「収容」関係で、現行のdistance閾値モデルとは別方式が必要)がRELATION_RULESに無いため、まず関係定義から必要 |
 | `code_engine.py`(旧称`building_code.py`) | 法規チェック | 狭く始めるべき、要免責表記 → **実装済み(2項目のみ)** | 採光有効面積比(窓面積/床面積、参考値1/7)とバリアフリー最小ドア幅(参考値0.8m)の2項目のみ実装。窓/ドアの`width`/`height`(`properties.archicad_details`、単位m)とZoneのポリゴン面積(shapely)を使用。**いずれも法的な適合保証ではない参考値である旨をAPIレスポンスの`disclaimer`フィールドに明記**している |

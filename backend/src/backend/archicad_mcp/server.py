@@ -156,11 +156,20 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     キャッシュから失われてしまうため、開発時の動作確認用途では
     基本的に0(全件)を指定する想定。
 
-    Tapirの GetAllElements + GetDetailsOfElements + Get3DBoundingBoxes を
-    使う。壁は芯線(begCoordinate/endCoordinate、多角形壁はpolygonOutline)、
-    部屋(Zone)は実境界(polygonCoordinates)を使う。それ以外の要素種別は
-    2D形状を持たないため、バウンディングボックスのXY投影で近似する。
-    要素タイプはArchicadの命名をそのまま使う(部屋は"Room"ではなく"Zone")。
+    Tapirの GetAllElements + GetDetailsOfElements + Get3DBoundingBoxes +
+    GetAttributesByType(ZoneCategory) を使う。壁は芯線(begCoordinate/
+    endCoordinate、多角形壁はpolygonOutline)、部屋(Zone)は実境界
+    (polygonCoordinates)を使う。それ以外の要素種別は2D形状を持たない
+    ため、バウンディングボックスのXY投影で近似する。要素タイプはArchicad
+    の命名をそのまま使う(部屋は"Room"ではなく"Zone")。
+
+    ZoneはcategoryAttributeIdが指すゾーンカテゴリ名(例:"住宅-1")を解決し
+    properties.zone_categoryに保存する。番号なしの大分類名(例:"住宅")の
+    Zoneは個々の部屋ではなく住戸/区画全体の面積集計用であることが実データ
+    検証で判明しているため、properties.zone_is_envelopeに真偽値として
+    記録する(tapir.envelope_zone_category_names()参照)。graph/relation.py
+    のcalculate_relations()とgraph/room.pyのfind_rooms()がこれを見て、
+    大分類Zoneを実室として誤って隣接/接続判定しないよう除外する。
     """
     all_guids = await tapir.get_all_element_guids()
     guids = all_guids if limit <= 0 else all_guids[:limit]
@@ -170,6 +179,12 @@ async def sync_from_archicad(limit: int = 50) -> dict:
 
     details_list = await tapir.get_details_of_elements(guids)
     bounding_boxes = await tapir.get_bounding_boxes(guids)
+    zone_categories = await tapir.get_zone_categories()
+
+    category_name_by_guid = {
+        category["attributeId"]["guid"]: category["name"] for category in zone_categories
+    }
+    envelope_category_names = tapir.envelope_zone_category_names(zone_categories)
 
     db.clear_elements()
 
@@ -182,10 +197,18 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         geometry = tapir.details_to_geometry(element_type, type_details, bbox_item)
         name = tapir.details_to_name(element_type, guid, type_details)
 
+        zone_category = None
+
+        if element_type == "Zone":
+            category_guid = (type_details.get("categoryAttributeId") or {}).get("guid")
+            zone_category = category_name_by_guid.get(category_guid)
+
         properties = {
             "floorIndex": details_item.get("floorIndex"),
             "layerIndex": details_item.get("layerIndex"),
             "archicad_details": type_details,
+            "zone_category": zone_category,
+            "zone_is_envelope": zone_category in envelope_category_names,
         }
 
         db.insert_element(

@@ -150,6 +150,11 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
         "z_min": 0,
         "z_max": 3000,
     }
+    # ゾーンカテゴリ("住宅-1"、番号付きサブタイプ)が解決され、実室として
+    # 扱われる(zone_is_envelope=False)ことを確認する。
+    zone_properties = json.loads(zone["properties"])
+    assert zone_properties["zone_category"] == "住宅-1"
+    assert zone_properties["zone_is_envelope"] is False
 
 
 def test_list_archicad_properties_tool(test_db, monkeypatch):
