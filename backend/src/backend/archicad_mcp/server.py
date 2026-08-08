@@ -197,6 +197,12 @@ async def sync_from_archicad(limit: int = 50) -> dict:
 
 
 @mcp_server.tool()
+async def get_archicad_geo_location() -> dict:
+    """Archicadプロジェクトの位置情報(緯度経度・標高・北方向)を取得する。"""
+    return await tapir.get_geo_location()
+
+
+@mcp_server.tool()
 async def list_archicad_properties() -> list[dict]:
     """Archicadの全プロパティ定義(GUID・名前・グループ等)を返す。
 

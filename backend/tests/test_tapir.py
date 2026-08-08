@@ -97,6 +97,26 @@ def _make_fake_tapir_server():
             ]
         }
 
+    @server.tool(name="GetGeoLocation")
+    def get_geo_location(input) -> dict:
+        # 実際のTapirの出力形状(command_definitions.js)通り、northは
+        # ラジアン。45度 = pi/4を返す。
+        return {
+            "projectLocation": {
+                "longitude": 139.767,
+                "latitude": 35.681,
+                "altitude": 10.0,
+                "north": 0.7853981633974483,
+            },
+            "surveyPoint": {
+                "position": {"eastings": 0, "northings": 0, "elevation": 0},
+                "geoReferencingParameters": {
+                    "crsName": "", "description": "", "geodeticDatum": "",
+                    "verticalDatum": "", "mapProjection": "", "mapZone": "",
+                },
+            },
+        }
+
     @server.tool(name="GetSelectedElements")
     def get_selected_elements(input) -> dict:
         return {"elements": [{"elementId": {"guid": "guid-1"}}]}
@@ -214,6 +234,15 @@ def test_get_bounding_boxes_and_geometry_conversion():
         "z_min": 0,
         "z_max": 3000,
     }
+
+
+def test_get_geo_location_adds_north_degrees():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    result = _run(tapir.get_geo_location(transport=transport))
+
+    assert result["projectLocation"]["north"] == 0.7853981633974483
+    assert result["north_degrees"] == 45.0
 
 
 def test_get_selected_element_guids():

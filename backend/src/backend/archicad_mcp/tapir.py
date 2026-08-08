@@ -47,6 +47,7 @@ guessed. Notably:
 """
 
 import json
+import math
 
 from . import client as archicad_client
 
@@ -194,6 +195,29 @@ async def delete_elements(guids, transport=None):
     return await _call(
         "DeleteElements", {"elements": _element_ids(guids)}, transport=transport
     )
+
+
+async def get_geo_location(transport=None):
+    """プロジェクトの位置情報(緯度経度・標高・北方向)を取得する。
+
+    GetGeoLocationはTapirコマンド定義(command_definitions.js)上
+    inputSchemeがnullの引数無しコマンド。他の要素単位の情報とは異なり
+    プロジェクト全体の設定値なので、sync_from_archicad()のような
+    SQLiteキャッシュへの保存は行わず、要求のたびにArchicadへ問い合わせる
+    (list_properties()と同じ「都度取得」方式)。
+    "north"はラジアンで返ってくるため、扱いやすいよう度数のnorth_degrees
+    を追加して返す。
+    """
+    payload = await _call("GetGeoLocation", transport=transport)
+    location = payload.get("projectLocation") or {}
+    north_radians = location.get("north")
+
+    return {
+        **payload,
+        "north_degrees": (
+            math.degrees(north_radians) if north_radians is not None else None
+        ),
+    }
 
 
 async def list_properties(transport=None):

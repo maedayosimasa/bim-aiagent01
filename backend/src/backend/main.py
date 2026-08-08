@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from .engine.spatial import analyze_space
 from .engine.relation_builder import rebuild_connections
 from .engine.vector_store import index_elements, search_elements
+from .engine.site import get_site_boundary, get_road_boundaries
 from .database.db import create_tables
 from .database.db import insert_element
 from mcp.server.transport_security import TransportSecuritySettings
@@ -14,6 +15,7 @@ from .archicad_mcp.server import (
     mcp_server,
     list_elements,
     sync_from_archicad,
+    get_archicad_geo_location,
     list_archicad_properties,
     get_archicad_property_values,
     set_archicad_property_value,
@@ -223,6 +225,27 @@ def list_bim_elements():
 
 
 # ==============================
+# Site Boundary / Road API
+# 敷地境界線・道路は専用の要素タイプが無く、Zone(部屋と同じ要素タイプ)に
+# 用途を表す名前("敷地"/"道路")を付けて登録する運用を前提に、SQLite
+# キャッシュ済みのZoneから名前で検索する(engine/site.py参照)。
+# 道路幅員・道路中心線はZoneポリゴンの最小外接矩形から幾何的に推定した
+# 近似値であり、実測値・設計値そのものではない。
+# ==============================
+
+@app.get("/site/boundary")
+def site_boundary():
+
+    return {"zones": get_site_boundary()}
+
+
+@app.get("/site/roads")
+def site_roads():
+
+    return {"zones": get_road_boundaries()}
+
+
+# ==============================
 # Rebuild Relations API
 # 要素間の関係(connections)を再計算
 # ==============================
@@ -352,6 +375,14 @@ async def _run_archicad_action(coro):
 async def archicad_sync(data: SyncFromArchicadRequest):
 
     return await _run_archicad_action(sync_from_archicad(data.limit))
+
+
+@app.get("/archicad/geo_location")
+async def archicad_geo_location():
+    # プロジェクト単位の設定値(要素ではない)なのでSQLiteキャッシュには
+    # 保存せず、list_archicad_properties()と同じく都度Archicadへ問い合わせる。
+
+    return await _run_archicad_action(get_archicad_geo_location())
 
 
 @app.get("/archicad/properties")
