@@ -64,6 +64,14 @@ services:
       # 未設定の場合、Archicad連携ツール(list_archicad_tools等)は
       # クラッシュせずエラーを返すだけになる。
       - ARCHICAD_MCP_URL=${ARCHICAD_MCP_URL:-}
+      # Legal Knowledge Builder(別リポジトリ)の法令検索APIのURL。
+      # 注意: backendはnetwork_mode: service:tailscaleでtailscaleコンテナと
+      # ネットワーク名前空間を共有しているため、http://127.0.0.1:8100は
+      # ホスト機械上で直接`uv run legal-knowledge-builder serve`している
+      # プロセスには届かない(ARCHICAD_MCP_URLのWSLゲートウェイ問題と同種)。
+      # docker-compose経由で動かす場合は、ホストのゲートウェイIPやTailscale
+      # URL等、実際に到達可能なアドレスを指定すること。
+      - LEGAL_API_URL=${LEGAL_API_URL:-}
     depends_on:
       - chromadb
       - tailscale

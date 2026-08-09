@@ -179,6 +179,58 @@ export function getArchicadConnection() {
   return get<ArchicadConnectionInfo>("/archicad/connection");
 }
 
+// ==============================
+// Legal Knowledge Builder連携
+// 別リポジトリ(~/Legal Knowledge Builder/)が構築したKnowledge Package
+// (建築基準法等の条文・引用関係・数値ルール)を検索するための型・関数。
+// backend側の /legal/* は Legal Knowledge Builder の検索API(別プロセス、
+// LEGAL_API_URL)への薄いプロキシ。
+// ==============================
+
+export type LegalSearchHit = {
+  node_id: string;
+  law_id: string | null;
+  law_title: string | null;
+  citation: string | null;
+  text: string | null;
+  distance: number;
+};
+
+export type LegalSearchResponse = {
+  query: string;
+  results: LegalSearchHit[];
+};
+
+export type LegalLawMetadata = {
+  law_id: string;
+  law_title: string;
+  law_type: string;
+  category: string;
+  as_of_date: string;
+  parent_law_title_hint: string | null;
+};
+
+export type LegalApiStatus = {
+  configured: boolean;
+  reachable: boolean;
+  detail?: unknown;
+  error?: string;
+};
+
+export function searchLegal(query: string, topK = 5, lawId?: string) {
+  const params = new URLSearchParams({ q: query, top_k: String(topK) });
+  if (lawId) params.set("law_id", lawId);
+  return get<LegalSearchResponse>(`/legal/search?${params.toString()}`);
+}
+
+export function getLegalLaws() {
+  return get<LegalLawMetadata[]>("/legal/laws");
+}
+
+export function getLegalStatus() {
+  return get<LegalApiStatus>("/legal/status");
+}
+
 export function setArchicadConnection(url: string | null) {
   return post<{ connection: ArchicadConnectionInfo; status: ArchicadStatus }>(
     "/archicad/connection",

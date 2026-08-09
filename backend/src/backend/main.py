@@ -1,6 +1,7 @@
 import json
 from contextlib import AsyncExitStack, asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -31,6 +32,7 @@ from .archicad_mcp.server import (
     get_graph_relation_snapshot,
 )
 from .archicad_mcp import client as archicad_client
+from .legal_mcp import client as legal_client
 
 # ==============================
 # MCPサーバーをFastAPIへマウント
@@ -481,3 +483,74 @@ async def archicad_focus_elements(data: FocusArchicadElementsRequest):
     # 選択+ハイライトする(guidsが空なら解除)。カメラ移動は未対応。
 
     return await _run_archicad_action(focus_archicad_elements(data.guids))
+
+
+# ==============================
+# Legal Knowledge Builder API連携
+# 建築関連法のKnowledge Package(knowledge/)を検索する別リポジトリ・別プロセス
+# (~/Legal Knowledge Builder/、`uv run legal-knowledge-builder serve`)への
+# 薄いプロキシ。法令改訂時のみ再ビルド・再起動される想定でbim-aiagent01の
+# 開発サイクルとは独立させており、bim-aiagent01自体には埋め込みモデル等の
+# 重い依存を持ち込まない(archicad_mcpの「別サービス+HTTPクライアント」
+# 構成をそのまま踏襲)。
+# ==============================
+
+async def _run_legal_action(coro):
+    try:
+        return await coro
+    except legal_client.LegalApiNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Legal APIがエラーを返しました: {exc}")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Legal APIへの接続に失敗しました: {exc}")
+
+
+@app.get("/legal/status")
+async def legal_status():
+
+    return await legal_client.check_connection()
+
+
+@app.get("/legal/connection")
+def get_legal_connection():
+
+    return legal_client.get_connection_info()
+
+
+@app.post("/legal/connection")
+async def set_legal_connection(data: ConnectionRequest):
+
+    url = data.url
+    if url == "local":
+        url = legal_client.LOCAL_PRESET_URL
+    legal_client.set_connection_url(url)
+
+    return {
+        "connection": legal_client.get_connection_info(),
+        "status": await legal_client.check_connection(),
+    }
+
+
+@app.get("/legal/laws")
+async def legal_laws():
+
+    return await _run_legal_action(legal_client.list_laws())
+
+
+@app.get("/legal/search")
+async def legal_search(q: str, top_k: int = 5, law_id: str | None = None):
+
+    return await _run_legal_action(legal_client.search(q, top_k=top_k, law_id=law_id))
+
+
+@app.get("/legal/article")
+async def legal_article(law_id: str, num: str):
+
+    return await _run_legal_action(legal_client.get_article(law_id, num))
+
+
+@app.get("/legal/rules")
+async def legal_rules(law_id: str, node_id: str | None = None, concept_id: str | None = None):
+
+    return await _run_legal_action(legal_client.get_rules(law_id, node_id=node_id, concept_id=concept_id))

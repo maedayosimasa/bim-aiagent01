@@ -84,13 +84,21 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 
 ローカル開発時の注意: WSL上でbackendを動かす場合、Windows側の127.0.0.1はWSLから直接届かない(別ネットワーク名前空間)。WSLのデフォルトゲートウェイIP(`ip route`で確認)を使う必要がある。
 
+### Legal Knowledge Builder連携 (`legal_mcp/`)
+
+建築関連法(建築基準法・建築士法・都市計画法等)の条文検索は、別リポジトリ`~/Legal Knowledge Builder/`(e-Gov法令XML → Knowledge Package(`knowledge/`)を構築するビルドパイプライン。法令改訂時のみ再ビルドされる想定で、本プロジェクトの開発サイクルとは独立)が公開する読み取り専用の検索API(`uv run legal-knowledge-builder serve`、既定ポート8100)を呼ぶ。`archicad_mcp/`と同じ「別プロセス+HTTPクライアント、URLで接続先を切替可能、未設定/未接続でもクラッシュせずステータスを返す」構成を踏襲している(MCPプロトコルではなく素のREST/JSON)。
+
+- `client.py`: Legal Knowledge Builder APIへのHTTPクライアント(`httpx`)。接続先URLは`LEGAL_API_URL`環境変数、またはランタイムオーバーライド(`POST /legal/connection`)で決まる。
+- `main.py`の`/legal/*`(`search`/`laws`/`article`/`rules`/`status`/`connection`)は薄いプロキシ(埋め込みモデル等の重い依存はbim-aiagent01側には持ち込まない。埋め込み計算・ChromaDB・条文データはすべてLegal Knowledge Builder側で完結する)。
+- frontend「法令検索」タブ(`LegalSearchTab.tsx`)は既存の「意味検索」タブ(`SearchTab.tsx`)とほぼ同じUIパターン。
+
 ### frontend
 
-ルーティングライブラリなし、`App.tsx`のローカルstateでタブ切り替え(ダッシュボード/要素同期/意味検索/空間関係グラフ/プロパティ編集)。`api/client.ts`が全エンドポイントの型付きfetchラッパーを集約。サーバー状態管理は`@tanstack/react-query`。表形式表示は`ag-grid-react`、空間関係グラフの可視化は`cytoscape`。
+ルーティングライブラリなし、`App.tsx`のローカルstateでタブ切り替え(ダッシュボード/要素同期/意味検索/法令検索/空間関係グラフ/プロパティ編集)。`api/client.ts`が全エンドポイントの型付きfetchラッパーを集約。サーバー状態管理は`@tanstack/react-query`。表形式表示は`ag-grid-react`、空間関係グラフの可視化は`cytoscape`。
 
 ### テストのパターン (`backend/tests/`)
 
-`conftest.py`の`api_client`フィクスチャは session scope で共有される`TestClient`(MCPサーバーの`session_manager.run()`はプロセス内で一度しか呼べないため)。Archicad連携のテストは`mcp.client._memory.InMemoryTransport`+`_make_fake_tapir_server()`(`test_tapir.py`)で実サーバーなしに検証する。
+`conftest.py`の`api_client`フィクスチャは session scope で共有される`TestClient`(MCPサーバーの`session_manager.run()`はプロセス内で一度しか呼べないため)。Archicad連携のテストは`mcp.client._memory.InMemoryTransport`+`_make_fake_tapir_server()`(`test_tapir.py`)で実サーバーなしに検証する。Legal Knowledge Builder連携のテスト(`test_main_legal_*.py`)は`legal_mcp.client`の関数をmonkeypatchして検証する(実ネットワークに依存しない)。`archicad_client`/`legal_client`ともモジュールレベルのランタイムオーバーライド(`_override_url`)を持つため、`conftest.py`の`autouse`フィクスチャでテスト間リークを防いでいる。
 
 ## 制約・方針
 
@@ -171,6 +179,7 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 - `search_elements()`(`engine/vector_store.py`)は類似検索のヒットをそのまま返すのみで、LLMによる自然文回答生成(RAGのGeneration部分)が存在しない
 - エージェントのツール呼び出しループ(発話→ツール選択→実行→観察→次の発話)が存在しない。`archicad_mcp/server.py`のMCPツール群(`list_elements`/`search_bim_elements`/`update_element_properties`/`move_archicad_element`等)は「ローカルLLM等が呼べるように」用意されているが、実際に呼ぶエージェント本体が無い
 - 会話/セッションの永続化が無い
+- **(2026-08-09追加)** 建築関連法の条文検索(`/legal/search`等、上記「Legal Knowledge Builder連携」参照)は先に用意できた。将来エージェントループを実装する際、「法規チェック」ツールの土台として使える状態にはなっているが、これ自体はエージェント本体でもLLM呼び出しでもない(素朴なベクトル検索の結果を返すだけ)。
 
 ### ⑩ アクション/操作層
 

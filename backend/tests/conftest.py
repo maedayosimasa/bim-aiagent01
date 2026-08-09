@@ -160,3 +160,14 @@ def _reset_archicad_connection_override():
     archicad_client.set_connection_url(None)
     yield
     archicad_client.set_connection_url(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_legal_connection_override():
+    # legal_mcp.client も同様にモジュールレベルのランタイムオーバーライドを
+    # 持つ(POST /legal/connection経由)。テスト間でリークしないようにする。
+    from backend.legal_mcp import client as legal_client
+
+    legal_client.set_connection_url(None)
+    yield
+    legal_client.set_connection_url(None)

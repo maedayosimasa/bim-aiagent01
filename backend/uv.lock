@@ -176,6 +176,7 @@ source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "mcp" },
     { name = "networkx" },
     { name = "shapely" },
@@ -192,6 +193,7 @@ dev = [
 requires-dist = [
     { name = "chromadb", specifier = ">=1.5.9" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "networkx", specifier = ">=3.6.1" },
     { name = "shapely", specifier = ">=2.1.2" },
