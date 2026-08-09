@@ -101,6 +101,16 @@ async def get_reference(law_id, node_id):
         return response.json()
 
 
+async def get_graph_neighbors(node_id, depth=1, edge_types=None):
+    params = {"node_id": node_id, "depth": depth}
+    if edge_types:
+        params["edge_types"] = ",".join(edge_types)
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(f"{_base_url()}/graph/neighbors", params=params)
+        response.raise_for_status()
+        return response.json()
+
+
 def _describe_exception(exc):
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 

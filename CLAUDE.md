@@ -89,7 +89,7 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 建築関連法(建築基準法・建築士法・都市計画法等)の条文検索は、別リポジトリ`~/Legal Knowledge Builder/`(e-Gov法令XML → Knowledge Package(`knowledge/`)を構築するビルドパイプライン。法令改訂時のみ再ビルドされる想定で、本プロジェクトの開発サイクルとは独立)が公開する読み取り専用の検索API(`uv run legal-knowledge-builder serve`、既定ポート8100)を呼ぶ。`archicad_mcp/`と同じ「別プロセス+HTTPクライアント、URLで接続先を切替可能、未設定/未接続でもクラッシュせずステータスを返す」構成を踏襲している(MCPプロトコルではなく素のREST/JSON)。
 
 - `client.py`: Legal Knowledge Builder APIへのHTTPクライアント(`httpx`)。接続先URLは`LEGAL_API_URL`環境変数、またはランタイムオーバーライド(`POST /legal/connection`)で決まる。
-- `main.py`の`/legal/*`(`search`/`laws`/`article`/`rules`/`status`/`connection`)は薄いプロキシ(埋め込みモデル等の重い依存はbim-aiagent01側には持ち込まない。埋め込み計算・ChromaDB・条文データはすべてLegal Knowledge Builder側で完結する)。
+- `main.py`の`/legal/*`(`search`/`laws`/`article`/`rules`/`reference`/`graph/neighbors`/`status`/`connection`)は薄いプロキシ(埋め込みモデル等の重い依存はbim-aiagent01側には持ち込まない。埋め込み計算・ChromaDB・条文データ・グラフ(GraphRAG)はすべてLegal Knowledge Builder側で完結する)。`graph/neighbors`はcontainment+引用関係+オントロジーを統合したグラフを起点ノードから多段階に辿る(GraphRAGの多段階検索、2026-08-10追加)。
 - frontend「法令検索」タブ(`LegalSearchTab.tsx`)は既存の「意味検索」タブ(`SearchTab.tsx`)とほぼ同じUIパターン。
 
 ### frontend

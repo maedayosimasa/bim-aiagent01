@@ -581,3 +581,12 @@ async def legal_rules(law_id: str, node_id: str | None = None, concept_id: str |
 async def legal_reference(law_id: str, node_id: str):
 
     return await _run_legal_action(legal_client.get_reference(law_id, node_id))
+
+
+@app.get("/legal/graph/neighbors")
+async def legal_graph_neighbors(node_id: str, depth: int = 1, edge_types: str | None = None):
+    # containment(HAS_CHILD)+引用関係+オントロジーを統合したグラフを起点
+    # ノードからdepth段階まで辿る(GraphRAGの多段階検索)。
+    types = edge_types.split(",") if edge_types else None
+
+    return await _run_legal_action(legal_client.get_graph_neighbors(node_id, depth=depth, edge_types=types))
