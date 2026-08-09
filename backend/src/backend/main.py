@@ -1,5 +1,7 @@
 import json
+import os
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -33,6 +35,25 @@ from .archicad_mcp.server import (
 )
 from .archicad_mcp import client as archicad_client
 from .legal_mcp import client as legal_client
+
+
+def _load_dotenv_if_present() -> None:
+    # docker-compose経由では docker-compose.yml が .env を読んで環境変数として
+    # 渡してくれるが、`uv run uvicorn ...` で直接起動する場合は誰も読んでくれない
+    # (ARCHICAD_MCP_URL/LEGAL_API_URL が「exportし忘れて未設定のまま」になる
+    # 事故が続いたため追加)。既にexport済みの値は上書きしない(setdefault)。
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_dotenv_if_present()
 
 # ==============================
 # MCPサーバーをFastAPIへマウント
@@ -554,3 +575,9 @@ async def legal_article(law_id: str, num: str):
 async def legal_rules(law_id: str, node_id: str | None = None, concept_id: str | None = None):
 
     return await _run_legal_action(legal_client.get_rules(law_id, node_id=node_id, concept_id=concept_id))
+
+
+@app.get("/legal/reference")
+async def legal_reference(law_id: str, node_id: str):
+
+    return await _run_legal_action(legal_client.get_reference(law_id, node_id))

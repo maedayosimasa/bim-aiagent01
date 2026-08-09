@@ -210,15 +210,42 @@ export type LegalLawMetadata = {
   parent_law_title_hint: string | null;
 };
 
+// Legal Knowledge BuilderのGET /health(manifest.json由来)の内容。
+// build allの結果(法令数・ノード数・引用/未解決数・ルール数・validation可否等)、
+// つまり「今読み込んでいるKnowledge Packageの構成」そのもの。
+export type LegalManifest = {
+  version: string;
+  built_at: string;
+  law_ids: string[];
+  law_count: number;
+  node_count: number;
+  reference_count: number;
+  unresolved_reference_count: number;
+  rule_count: number;
+  validation_passed: boolean;
+};
+
+export type LegalHealthDetail = {
+  status: string;
+  manifest?: LegalManifest;
+};
+
 export type LegalApiStatus = {
   configured: boolean;
   reachable: boolean;
-  detail?: unknown;
+  detail?: LegalHealthDetail;
   error?: string;
 };
 
-export function searchLegal(query: string, topK = 5, lawId?: string) {
-  const params = new URLSearchParams({ q: query, top_k: String(topK) });
+export type LegalSearchBackend = "chroma" | "pgvector";
+
+export function searchLegal(
+  query: string,
+  topK = 5,
+  lawId?: string,
+  backend: LegalSearchBackend = "chroma"
+) {
+  const params = new URLSearchParams({ q: query, top_k: String(topK), backend });
   if (lawId) params.set("law_id", lawId);
   return get<LegalSearchResponse>(`/legal/search?${params.toString()}`);
 }
@@ -229,6 +256,69 @@ export function getLegalLaws() {
 
 export function getLegalStatus() {
   return get<LegalApiStatus>("/legal/status");
+}
+
+// rule_graph / reference_graph(検索結果1件ごとの詳細表示用)。
+// バックエンドのモデル(legal_knowledge_builder.models.rule/.reference)に対応。
+
+export type LegalComparator = "gte" | "lte" | "lt" | "gt" | "eq";
+
+export type LegalNumericCondition = {
+  raw_text: string;
+  value: number;
+  unit: string | null;
+  comparator: LegalComparator | null;
+};
+
+export type LegalModality =
+  | "obligation"
+  | "prohibition"
+  | "permission"
+  | "exception"
+  | "definition";
+
+export type LegalRule = {
+  rule_id: string;
+  node_id: string;
+  law_id: string;
+  raw_sentence: string;
+  modality: LegalModality | null;
+  conditions: LegalNumericCondition[];
+  concept_ids: string[];
+  confidence: number;
+};
+
+export type LegalReferenceType =
+  | "article_citation"
+  | "relative"
+  | "external_law"
+  | "apply_mutatis_mutandis"
+  | "deemed_reading";
+
+export type LegalReferenceEdge = {
+  from_node_id: string;
+  to_node_id: string | null;
+  to_law_id: string | null;
+  to_law_title: string | null;
+  ref_type: LegalReferenceType;
+  raw_text: string;
+  resolved: boolean;
+  unresolved_reason: string | null;
+};
+
+export type LegalReferenceResult = {
+  outgoing: LegalReferenceEdge[];
+  incoming: LegalReferenceEdge[];
+};
+
+export function getLegalRules(lawId: string, nodeId: string) {
+  const params = new URLSearchParams({ law_id: lawId, node_id: nodeId });
+  return get<LegalRule[]>(`/legal/rules?${params.toString()}`);
+}
+
+export function getLegalReference(lawId: string, nodeId: string) {
+  const params = new URLSearchParams({ law_id: lawId, node_id: nodeId });
+  return get<LegalReferenceResult>(`/legal/reference?${params.toString()}`);
 }
 
 export function setArchicadConnection(url: string | null) {

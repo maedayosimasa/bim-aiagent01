@@ -1,23 +1,40 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { searchLegal, getLegalStatus } from "../api/client";
+import { useMutation } from "@tanstack/react-query";
+import { searchLegal, type LegalSearchBackend } from "../api/client";
+import LegalKnowledgeStatus from "./LegalKnowledgeStatus";
+import SearchResultDetail from "./SearchResultDetail";
+
+const BACKEND_LABELS: Record<LegalSearchBackend, string> = {
+  chroma: "ChromaDB(既定、ファイルベース)",
+  pgvector: "pgvector(PostgreSQL)",
+};
 
 function LegalSearchTab() {
   const [query, setQuery] = useState("");
-
-  const statusQuery = useQuery({
-    queryKey: ["legal-status"],
-    queryFn: getLegalStatus,
-  });
+  const [backend, setBackend] = useState<LegalSearchBackend>("chroma");
+  const [searchedBackend, setSearchedBackend] = useState<LegalSearchBackend | null>(null);
+  const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
 
   const searchMutation = useMutation({
-    mutationFn: (q: string) => searchLegal(q, 10),
+    mutationFn: (q: string) => searchLegal(q, 10, undefined, backend),
   });
 
   const runSearch = () => {
     if (query.trim()) {
+      setSearchedBackend(backend);
+      setExpandedNodeId(null);
       searchMutation.mutate(query.trim());
     }
+  };
+
+  const changeBackend = (next: LegalSearchBackend) => {
+    setBackend(next);
+    // 検索先を切り替えただけでは再検索しない仕様のため、古い検索先の結果が
+    // 新しい検索先の結果であるかのように見えてしまう(実際にあった混乱)。
+    // 切り替えた時点で表示中の結果をクリアし、「検索」を押すまで何も表示しない。
+    searchMutation.reset();
+    setSearchedBackend(null);
+    setExpandedNodeId(null);
   };
 
   return (
@@ -29,15 +46,27 @@ function LegalSearchTab() {
         法令データの再ビルド・再起動は本プロジェクトとは独立して行われる。
       </p>
 
-      {statusQuery.data && !statusQuery.data.reachable && (
-        <p className="error">
-          Legal APIに接続できません(
-          {statusQuery.data.configured
-            ? "LEGAL_API_URLは設定済みですが応答がありません"
-            : "LEGAL_API_URL未設定"}
-          )。`uv run legal-knowledge-builder serve` が起動しているか確認してください。
-        </p>
-      )}
+      <LegalKnowledgeStatus />
+
+      <div className="legal-backend-select">
+        <span>検索先:</span>
+        <label>
+          <input
+            type="radio"
+            checked={backend === "chroma"}
+            onChange={() => changeBackend("chroma")}
+          />
+          ChromaDB(既定、ファイルベース)
+        </label>
+        <label>
+          <input
+            type="radio"
+            checked={backend === "pgvector"}
+            onChange={() => changeBackend("pgvector")}
+          />
+          pgvector(PostgreSQL、要接続)
+        </label>
+      </div>
 
       <div className="button-row">
         <input
@@ -56,8 +85,11 @@ function LegalSearchTab() {
         <p className="error">{String(searchMutation.error)}</p>
       )}
 
-      {searchMutation.data && (
+      {searchMutation.data && searchedBackend && (
         <>
+          <p className="hint">
+            検索先: <strong>{BACKEND_LABELS[searchedBackend]}</strong>({searchMutation.data.results.length}件)
+          </p>
           {searchMutation.data.results.length === 0 && (
             <p>一致する条文がありません。</p>
           )}
@@ -69,6 +101,21 @@ function LegalSearchTab() {
                   <span className="distance">距離: {hit.distance.toFixed(3)}</span>
                 </div>
                 <div className="search-result-doc">{hit.text?.trim()}</div>
+                {hit.law_id && (
+                  <button
+                    className="legal-detail-toggle"
+                    onClick={() =>
+                      setExpandedNodeId(expandedNodeId === hit.node_id ? null : hit.node_id)
+                    }
+                  >
+                    {expandedNodeId === hit.node_id
+                      ? "▲ ルール・引用関係を閉じる"
+                      : "▼ ルール・引用関係を見る"}
+                  </button>
+                )}
+                {expandedNodeId === hit.node_id && hit.law_id && (
+                  <SearchResultDetail lawId={hit.law_id} nodeId={hit.node_id} />
+                )}
               </li>
             ))}
           </ul>

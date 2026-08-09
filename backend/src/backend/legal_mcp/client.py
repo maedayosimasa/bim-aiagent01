@@ -94,6 +94,13 @@ async def get_rules(law_id, node_id=None, concept_id=None):
         return response.json()
 
 
+async def get_reference(law_id, node_id):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{_base_url()}/reference", params={"law_id": law_id, "node_id": node_id})
+        response.raise_for_status()
+        return response.json()
+
+
 def _describe_exception(exc):
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
