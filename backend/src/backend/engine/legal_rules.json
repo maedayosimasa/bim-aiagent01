@@ -1,0 +1,20 @@
+[
+  {
+    "rule_id": "daylighting_ratio",
+    "title": "採光有効面積比(参考値)",
+    "concept_id": "daylighting",
+    "applies_when": {"entity_type": "Zone"},
+    "check": "daylighting_ratio",
+    "verification": {"comparator": "gte", "threshold": 0.14285714285714285, "unit": "ratio"},
+    "disclaimer": "参考値です。建築基準法の有効採光面積は採光補正係数等を用いた法定計算が必要で、この値は窓面積/床面積の単純比率による目安に過ぎません。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "accessible_door_width",
+    "title": "バリアフリー最小ドア幅(参考値)",
+    "concept_id": "barrier_free",
+    "applies_when": {"entity_type": "Door"},
+    "check": "accessible_door_width",
+    "verification": {"comparator": "gte", "threshold": 0.8, "unit": "m"},
+    "disclaimer": "参考値です。バリアフリーに関する最小ドア幅の基準は建物用途・自治体条例により異なります。法的な適合を保証するものではありません。"
+  }
+]

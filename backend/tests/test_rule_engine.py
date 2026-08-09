@@ -5,10 +5,25 @@ from backend.engine import rule_engine
 from backend.legal_mcp import client as legal_client
 
 
-def test_status_from_bool():
-    assert rule_engine._status_from_bool(True) is rule_engine.RuleCheckStatus.PASS
-    assert rule_engine._status_from_bool(False) is rule_engine.RuleCheckStatus.FAIL
-    assert rule_engine._status_from_bool(None) is rule_engine.RuleCheckStatus.UNKNOWN
+def test_status_for_uses_comparator():
+    verification = rule_engine.Verification(comparator="gte", threshold=0.8, unit="m")
+
+    assert rule_engine._status_for(0.9, verification) is rule_engine.RuleCheckStatus.PASS
+    assert rule_engine._status_for(0.7, verification) is rule_engine.RuleCheckStatus.FAIL
+    assert rule_engine._status_for(None, verification) is rule_engine.RuleCheckStatus.UNKNOWN
+
+
+def test_load_legal_rules_returns_known_rules():
+    rules = {r.rule_id: r for r in rule_engine.load_legal_rules()}
+
+    assert set(rules) == {"daylighting_ratio", "accessible_door_width"}
+    assert rules["daylighting_ratio"].check == "daylighting_ratio"
+    assert rules["daylighting_ratio"].concept_id == "daylighting"
+    assert rules["accessible_door_width"].verification.threshold == 0.8
+
+
+def test_get_legal_rule_returns_none_for_unknown_id():
+    assert rule_engine.get_legal_rule("does_not_exist") is None
 
 
 def test_legal_sources_for_concept_empty_when_not_configured(monkeypatch):
@@ -91,6 +106,14 @@ def test_run_daylighting_check_structures_result(test_db, monkeypatch):
     assert item["target_guid"] == "room1"
     assert item["status"] == "fail"  # 2/50 < 1/7
     assert item["evidence"]["window_count"] == 1
+
+
+def test_evaluate_legal_rule_by_id_raises_for_unknown_rule():
+    try:
+        asyncio.run(rule_engine.evaluate_legal_rule_by_id("does_not_exist"))
+        assert False, "ValueErrorが発生するはず"
+    except ValueError:
+        pass
 
 
 def test_run_accessible_door_width_check_structures_result(test_db, monkeypatch):

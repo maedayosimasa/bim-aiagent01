@@ -124,6 +124,31 @@ def test_engine_rules_accessible_doors_endpoint(api_client, sample_elements, mon
     assert "items" in body
 
 
+def test_engine_legal_rules_endpoint(api_client):
+    response = api_client.get("/engine/legal_rules")
+
+    assert response.status_code == 200
+    rule_ids = {r["rule_id"] for r in response.json()}
+    assert rule_ids == {"daylighting_ratio", "accessible_door_width"}
+
+
+def test_engine_legal_rules_evaluate_endpoint(api_client, sample_elements, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+
+    response = api_client.get("/engine/legal_rules/accessible_door_width/evaluate")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rule_id"] == "accessible_door_width"
+    assert body["concept_id"] == "barrier_free"
+
+
+def test_engine_legal_rules_evaluate_endpoint_404_for_unknown_rule(api_client):
+    response = api_client.get("/engine/legal_rules/does_not_exist/evaluate")
+
+    assert response.status_code == 404
+
+
 def test_engine_accessibility_endpoint(api_client, sample_elements):
     response = api_client.get("/engine/accessibility")
 

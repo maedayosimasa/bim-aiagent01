@@ -1,13 +1,20 @@
-"""Rule Engine: BIMデータの実測値と、参考値としての法規チェック(`code_engine.py`)を
-PASS/FAIL/UNKNOWN判定として構造化し、Legal Knowledge Builder側のRule(どの法令の
-どの条文に基づく参考値か)をlegal_sourcesとして結果に添付する。
+"""Rule Engine: 法規チェックをコード(Python関数)ではなくJSON(`legal_rules.json`)で
+宣言し、BIMデータの実測値と突き合わせてPASS/FAIL/UNKNOWN判定を行う。
 
-計算式自体はLLMが行うのではなく、`code_engine.py`と同じくPythonの定数+比較式で
-決定的に評価する(このモジュールは判定式を変えない。既存チェックの結果を
-構造化し、法令根拠を紐付けるだけ)。legal_sourcesはLegal Knowledge Builder側の
-Rule(正規表現抽出、confidence付き)をそのまま転記するだけで、この判定式が
-その条文から自動導出されたことを意味しない(自動導出はしていない。あくまで
-「この参考値に関連しそうな条文」の一覧)。
+各`LegalRule`は「どのBIM実測値を使うか(check)」「その値をどう判定するか
+(verification: comparator+threshold+unit)」「どの法概念に基づく参考値か
+(concept_id)」を宣言するだけの静的データで、Legal Knowledge Builderの
+Rule(正規表現抽出、confidence付き)とは別物である。measured_valueの計算式
+自体はLLMが行うのではなく、`check`に登録されたPython関数(`RULE_CHECK_REGISTRY`、
+実体は`code_engine.py`)が決定的に計算する。JSON側は「この関数の結果をどの
+閾値と比べるか」を宣言するだけで、判定式そのものをJSONから自動生成しては
+いない(そこまでの汎化はしていない。新しいチェックを追加するには
+RULE_CHECK_REGISTRYにPython関数を登録した上でlegal_rules.jsonにエントリを足す)。
+
+legal_sourcesはLegal Knowledge Builder(`/rules/by_concept`)から取得した、
+concept_idに紐づく法令Rule(law_id/node_id/raw_sentence/modality/confidence)
+をそのまま転記するだけで、この判定式がその条文から自動導出されたことを
+意味しない(あくまで「この参考値に関連しそうな条文」の一覧)。
 
 Legal Knowledge Builder(別プロセス)が未接続・未起動の場合でも判定自体は
 継続し、legal_sourcesが空になるだけにする(`legal_mcp/client.py`と同じ
@@ -16,10 +23,17 @@ Legal Knowledge Builder(別プロセス)が未接続・未起動の場合でも�
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from enum import Enum
+from pathlib import Path
+
+from pydantic import BaseModel
 
 from ..legal_mcp import client as legal_client
 from .code_engine import check_accessible_door_width, check_daylighting
+
+_RULES_PATH = Path(__file__).parent / "legal_rules.json"
 
 
 class RuleCheckStatus(str, Enum):
@@ -29,10 +43,99 @@ class RuleCheckStatus(str, Enum):
     NOT_APPLICABLE = "not_applicable"  # このBIMモデルに対象要素が存在しない
 
 
-def _status_from_bool(meets: bool | None) -> RuleCheckStatus:
-    if meets is None:
+class RuleComparator(str, Enum):
+    GTE = "gte"
+    LTE = "lte"
+    GT = "gt"
+    LT = "lt"
+    EQ = "eq"
+
+
+_COMPARATOR_FNS: dict[RuleComparator, Callable[[float, float], bool]] = {
+    RuleComparator.GTE: lambda value, threshold: value >= threshold,
+    RuleComparator.LTE: lambda value, threshold: value <= threshold,
+    RuleComparator.GT: lambda value, threshold: value > threshold,
+    RuleComparator.LT: lambda value, threshold: value < threshold,
+    RuleComparator.EQ: lambda value, threshold: value == threshold,
+}
+
+
+class Verification(BaseModel):
+    comparator: RuleComparator
+    threshold: float
+    unit: str | None = None
+
+
+class LegalRule(BaseModel):
+    rule_id: str
+    title: str
+    concept_id: str
+    """Legal Knowledge Builderのontology concept_id(legal_sources取得キー)。"""
+    applies_when: dict = {}
+    """このルールが対象とするBIM要素の表示用メタデータ(例: entity_type)。
+    現状は実際の絞り込みには使わない(絞り込みはcheck関数側が行う)。将来、
+    複数checkを1関数に集約する際のフィルタ条件として使う余地を残している。"""
+    check: str
+    """RULE_CHECK_REGISTRYに登録されたPython関数のキー。実測値の計算は
+    ここで指定された関数が行う(JSON側は計算式を持たない)。"""
+    verification: Verification
+    disclaimer: str
+
+
+def _compute_daylighting_ratio() -> list[dict]:
+    result = check_daylighting()
+    return [
+        {
+            "target_guid": room["room_guid"],
+            "target_name": room["room_name"],
+            "measured_value": room["ratio"],
+            "evidence": {
+                "floor_area_m2": room["floor_area_m2"],
+                "window_area_m2": room["window_area_m2"],
+                "window_count": room["window_count"],
+            },
+        }
+        for room in result["rooms"]
+    ]
+
+
+def _compute_accessible_door_width() -> list[dict]:
+    result = check_accessible_door_width()
+    return [
+        {
+            "target_guid": door["door_guid"],
+            "target_name": door["door_name"],
+            "measured_value": door["width_m"],
+            "evidence": {},
+        }
+        for door in result["doors"]
+    ]
+
+
+# checkキー→実測値を計算するPython関数。新しい法令Ruleを足す場合、まず
+# ここに計算関数を登録してから legal_rules.json にエントリを追加する
+# (逆にJSON側だけを足しても、対応するcheck関数が無ければevaluate_legal_rule()
+# がエラーにする)。
+RULE_CHECK_REGISTRY: dict[str, Callable[[], list[dict]]] = {
+    "daylighting_ratio": _compute_daylighting_ratio,
+    "accessible_door_width": _compute_accessible_door_width,
+}
+
+
+def load_legal_rules() -> list[LegalRule]:
+    data = json.loads(_RULES_PATH.read_text(encoding="utf-8"))
+    return [LegalRule.model_validate(item) for item in data]
+
+
+def get_legal_rule(rule_id: str) -> LegalRule | None:
+    return next((rule for rule in load_legal_rules() if rule.rule_id == rule_id), None)
+
+
+def _status_for(measured_value: float | None, verification: Verification) -> RuleCheckStatus:
+    if measured_value is None:
         return RuleCheckStatus.UNKNOWN
-    return RuleCheckStatus.PASS if meets else RuleCheckStatus.FAIL
+    comparator_fn = _COMPARATOR_FNS[verification.comparator]
+    return RuleCheckStatus.PASS if comparator_fn(measured_value, verification.threshold) else RuleCheckStatus.FAIL
 
 
 async def _legal_sources_for_concept(concept_id: str) -> list[dict]:
@@ -57,57 +160,49 @@ async def _legal_sources_for_concept(concept_id: str) -> list[dict]:
     ]
 
 
-async def run_daylighting_check() -> dict:
-    result = check_daylighting()
-    legal_sources = await _legal_sources_for_concept("daylighting")
+async def evaluate_legal_rule(rule: LegalRule) -> dict:
+    compute = RULE_CHECK_REGISTRY.get(rule.check)
+    if compute is None:
+        raise ValueError(f"未登録のcheckです: {rule.check}(RULE_CHECK_REGISTRYに未登録)")
+
+    measurements = compute()
+    legal_sources = await _legal_sources_for_concept(rule.concept_id)
 
     items = [
         {
-            "target_guid": room["room_guid"],
-            "target_name": room["room_name"],
-            "status": _status_from_bool(room["meets_reference_ratio"]).value,
-            "measured_value": room["ratio"],
-            "unit": "ratio",
-            "evidence": {
-                "floor_area_m2": room["floor_area_m2"],
-                "window_area_m2": room["window_area_m2"],
-                "window_count": room["window_count"],
-            },
+            "target_guid": m["target_guid"],
+            "target_name": m.get("target_name"),
+            "status": _status_for(m["measured_value"], rule.verification).value,
+            "measured_value": m["measured_value"],
+            "unit": rule.verification.unit,
+            "evidence": m.get("evidence", {}),
         }
-        for room in result["rooms"]
+        for m in measurements
     ]
 
     return {
-        "concept_id": "daylighting",
-        "threshold": result["reference_ratio"],
-        "threshold_unit": "ratio",
-        "disclaimer": result["disclaimer"],
+        "rule_id": rule.rule_id,
+        "title": rule.title,
+        "concept_id": rule.concept_id,
+        "threshold": rule.verification.threshold,
+        "threshold_unit": rule.verification.unit,
+        "comparator": rule.verification.comparator.value,
+        "disclaimer": rule.disclaimer,
         "legal_sources": legal_sources,
         "items": items,
     }
+
+
+async def evaluate_legal_rule_by_id(rule_id: str) -> dict:
+    rule = get_legal_rule(rule_id)
+    if rule is None:
+        raise ValueError(f"未登録のルールです: {rule_id}")
+    return await evaluate_legal_rule(rule)
+
+
+async def run_daylighting_check() -> dict:
+    return await evaluate_legal_rule_by_id("daylighting_ratio")
 
 
 async def run_accessible_door_width_check() -> dict:
-    result = check_accessible_door_width()
-    legal_sources = await _legal_sources_for_concept("barrier_free")
-
-    items = [
-        {
-            "target_guid": door["door_guid"],
-            "target_name": door["door_name"],
-            "status": _status_from_bool(door["meets_reference_width"]).value,
-            "measured_value": door["width_m"],
-            "unit": "m",
-            "evidence": {},
-        }
-        for door in result["doors"]
-    ]
-
-    return {
-        "concept_id": "barrier_free",
-        "threshold": result["reference_min_width_m"],
-        "threshold_unit": "m",
-        "disclaimer": result["disclaimer"],
-        "legal_sources": legal_sources,
-        "items": items,
-    }
+    return await evaluate_legal_rule_by_id("accessible_door_width")

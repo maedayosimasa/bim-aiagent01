@@ -14,7 +14,12 @@ from .engine.site import get_site_boundary, get_road_boundaries
 from .engine.room_engine import analyze_room_adjacency
 from .engine.evacuation_engine import find_evacuation_routes
 from .engine.code_engine import check_daylighting, check_accessible_door_width
-from .engine.rule_engine import run_daylighting_check, run_accessible_door_width_check
+from .engine.rule_engine import (
+    run_daylighting_check,
+    run_accessible_door_width_check,
+    load_legal_rules,
+    evaluate_legal_rule_by_id,
+)
 from .engine.accessibility import analyze_accessibility
 from .engine.equipment import find_room_equipment
 from .database.db import create_tables
@@ -338,6 +343,24 @@ async def engine_rules_daylighting():
 async def engine_rules_accessible_doors():
 
     return await run_accessible_door_width_check()
+
+
+@app.get("/engine/legal_rules")
+def engine_legal_rules():
+    # 法規チェックの定義一覧(engine/legal_rules.json)。判定式はコードではなく
+    # このJSON(rule_id/concept_id/check/verification/disclaimer)で宣言する
+    # (engine/rule_engine.py参照)。
+
+    return [rule.model_dump() for rule in load_legal_rules()]
+
+
+@app.get("/engine/legal_rules/{rule_id}/evaluate")
+async def engine_legal_rules_evaluate(rule_id: str):
+
+    try:
+        return await evaluate_legal_rule_by_id(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/engine/accessibility")
