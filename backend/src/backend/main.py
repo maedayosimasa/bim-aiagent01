@@ -14,6 +14,7 @@ from .engine.site import get_site_boundary, get_road_boundaries
 from .engine.room_engine import analyze_room_adjacency
 from .engine.evacuation_engine import find_evacuation_routes
 from .engine.code_engine import check_daylighting, check_accessible_door_width
+from .engine.rule_engine import run_daylighting_check, run_accessible_door_width_check
 from .engine.accessibility import analyze_accessibility
 from .engine.equipment import find_room_equipment
 from .database.db import create_tables
@@ -324,6 +325,21 @@ def engine_code_accessible_doors():
     return check_accessible_door_width()
 
 
+@app.get("/engine/rules/daylighting")
+async def engine_rules_daylighting():
+    # check_daylighting()(engine/code_engine.py)をPASS/FAIL/UNKNOWN判定として
+    # 構造化し、Legal Knowledge Builderから該当法令Rule(法的根拠の参考情報。
+    # 判定式が条文から自動導出されたわけではない)を添付する(engine/rule_engine.py)。
+
+    return await run_daylighting_check()
+
+
+@app.get("/engine/rules/accessible_doors")
+async def engine_rules_accessible_doors():
+
+    return await run_accessible_door_width_check()
+
+
 @app.get("/engine/accessibility")
 def engine_accessibility():
 
@@ -581,6 +597,20 @@ async def legal_rules(law_id: str, node_id: str | None = None, concept_id: str |
 async def legal_reference(law_id: str, node_id: str):
 
     return await _run_legal_action(legal_client.get_reference(law_id, node_id))
+
+
+@app.get("/legal/rules/by_concept")
+async def legal_rules_by_concept(concept_id: str):
+    # law_id不明のまま概念横断でRuleを引く(Rule Engineがconcept_id起点で法令根拠を
+    # 探す際に使う。/legal/rulesはlaw_id必須なのでこちらを使う)。
+
+    return await _run_legal_action(legal_client.get_rules_by_concept(concept_id))
+
+
+@app.get("/legal/concepts")
+async def legal_concepts(has_bim_mapping: bool = False):
+
+    return await _run_legal_action(legal_client.get_concepts(has_bim_mapping=has_bim_mapping))
 
 
 @app.get("/legal/graph/neighbors")

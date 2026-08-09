@@ -50,6 +50,44 @@ def test_legal_article_proxies_result_when_configured(api_client, monkeypatch):
     assert response.json()["article"]["num"] == "43"
 
 
+def test_legal_rules_by_concept_proxies_result_when_configured(api_client, monkeypatch):
+    monkeypatch.setenv("LEGAL_API_URL", "http://legal.example.invalid")
+
+    async def fake_get_rules_by_concept(concept_id):
+        assert concept_id == "daylighting"
+        return [{"rule_id": "rule:1", "law_id": "L1", "node_id": "n1", "raw_sentence": "s", "modality": "obligation", "conditions": [], "concept_ids": ["daylighting"], "confidence": 0.5}]
+
+    monkeypatch.setattr(legal_client, "get_rules_by_concept", fake_get_rules_by_concept)
+
+    response = api_client.get("/legal/rules/by_concept", params={"concept_id": "daylighting"})
+
+    assert response.status_code == 200
+    assert response.json()[0]["rule_id"] == "rule:1"
+
+
+def test_legal_rules_by_concept_returns_400_when_not_configured(api_client, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+
+    response = api_client.get("/legal/rules/by_concept", params={"concept_id": "daylighting"})
+
+    assert response.status_code == 400
+
+
+def test_legal_concepts_proxies_result_when_configured(api_client, monkeypatch):
+    monkeypatch.setenv("LEGAL_API_URL", "http://legal.example.invalid")
+
+    async def fake_get_concepts(has_bim_mapping=False):
+        assert has_bim_mapping is True
+        return [{"concept_id": "opening", "label": "開口部", "aliases": [], "category": None, "bim_mapping": {"bim_entity_types": ["Door", "Window"], "required_properties": [], "relation_dependent": False, "geometry_required": False, "notes": None}}]
+
+    monkeypatch.setattr(legal_client, "get_concepts", fake_get_concepts)
+
+    response = api_client.get("/legal/concepts", params={"has_bim_mapping": True})
+
+    assert response.status_code == 200
+    assert response.json()[0]["concept_id"] == "opening"
+
+
 def test_legal_search_returns_502_when_backend_unreachable(api_client, monkeypatch):
     import httpx
 

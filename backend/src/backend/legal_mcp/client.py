@@ -94,6 +94,21 @@ async def get_rules(law_id, node_id=None, concept_id=None):
         return response.json()
 
 
+async def get_rules_by_concept(concept_id):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{_base_url()}/rules/by_concept", params={"concept_id": concept_id})
+        response.raise_for_status()
+        return response.json()
+
+
+async def get_concepts(has_bim_mapping=False):
+    params = {"has_bim_mapping": has_bim_mapping} if has_bim_mapping else {}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{_base_url()}/concepts", params=params)
+        response.raise_for_status()
+        return response.json()
+
+
 async def get_reference(law_id, node_id):
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(f"{_base_url()}/reference", params={"law_id": law_id, "node_id": node_id})

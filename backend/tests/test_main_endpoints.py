@@ -101,6 +101,29 @@ def test_engine_code_accessible_doors_endpoint(api_client, sample_elements):
     assert "disclaimer" in response.json()
 
 
+def test_engine_rules_daylighting_endpoint(api_client, sample_elements, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+
+    response = api_client.get("/engine/rules/daylighting")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["concept_id"] == "daylighting"
+    assert body["legal_sources"] == []
+    assert "items" in body
+
+
+def test_engine_rules_accessible_doors_endpoint(api_client, sample_elements, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+
+    response = api_client.get("/engine/rules/accessible_doors")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["concept_id"] == "barrier_free"
+    assert "items" in body
+
+
 def test_engine_accessibility_endpoint(api_client, sample_elements):
     response = api_client.get("/engine/accessibility")
 
