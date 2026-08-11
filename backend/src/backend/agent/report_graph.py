@@ -42,6 +42,9 @@ REPORT_SYSTEM_PROMPT = """\
   確定的な法的根拠として断定しないこと。
 - チェック項目ごとに見出しを分け、FAILがある場合は該当箇所を具体的に列挙し、
   UNKNOWNがある場合はその理由(実測値が取得できない等)に触れること。
+- 「未判定」と記されたチェックは、判定に必要な外部の法規条件(用途地域等)が
+  未設定のため実行されなかったことを意味する。PASS/FAILとして扱わず、
+  何が不足しているかを明記し、値を設定すれば判定できるようになる旨を書くこと。
 - 最後に全体の総評を短くまとめること。
 """
 
@@ -68,6 +71,17 @@ def _summarize_for_prompt(checks: list[dict]) -> str:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
 
         lines.append(f"■{check['title']}(rule_id={check['rule_id']})")
+
+        if check.get("missing_inputs"):
+            missing_labels = "、".join(m["label"] for m in check["missing_inputs"])
+            lines.append(
+                f"  未判定: このチェックには外部の法規条件({missing_labels})が"
+                "必要ですが未設定のため、今回は判定を実行していません。"
+            )
+            lines.append(f"  免責事項: {check['disclaimer']}")
+            lines.append("")
+            continue
+
         lines.append(
             f"  判定基準: 実測値 {check['comparator']} {check['threshold']}"
             f"{check['threshold_unit'] or ''}"

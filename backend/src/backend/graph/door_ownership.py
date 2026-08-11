@@ -98,6 +98,57 @@ def _probe_points(wall):
     ]
 
 
+def find_opening_outward_direction(opening, walls_by_guid, room_polygons):
+    """開口部の所属壁の法線方向のうち、部屋の外側(どのRoom/Zoneポリゴンにも
+    含まれない側)を向く単位ベクトル(dx, dy)を返す。特定できなければNone。
+
+    _probe_points()と同じ壁法線の考え方を使い、2つのプローブ点のどちらが
+    部屋の内側/外側かで判定する(engine/effective_daylighting.pyの採光
+    補正係数計算で、開口部から敷地境界線までの水平距離Dを測る方向を
+    決めるために使う)。両側とも内側/外側になってしまう場合(部屋の角に
+    近い開口部等)はNoneを返す。
+
+    room_polygonsは(guid, shapely Polygon)のタプルのリスト。
+    """
+
+    owner_wall = _door_owner_wall(opening, walls_by_guid)
+
+    if owner_wall is None:
+        return None
+
+    try:
+        geom, _ = parse_geometry(owner_wall["geometry"])
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+    if geom.geom_type != "LineString":
+        return None
+
+    (x1, y1), (x2, y2) = geom.coords[0], geom.coords[-1]
+    dx, dy = x2 - x1, y2 - y1
+    length = math.hypot(dx, dy)
+
+    if length == 0:
+        return None
+
+    mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+    nx, ny = -dy / length, dx / length
+    offset = _wall_half_thickness_mm(owner_wall) + _PROBE_MARGIN_MM
+
+    probe_positive = Point(mx + nx * offset, my + ny * offset)
+    probe_negative = Point(mx - nx * offset, my - ny * offset)
+
+    positive_inside = any(polygon.contains(probe_positive) for _, polygon in room_polygons)
+    negative_inside = any(polygon.contains(probe_negative) for _, polygon in room_polygons)
+
+    if positive_inside and not negative_inside:
+        return (-nx, -ny)
+    if negative_inside and not positive_inside:
+        return (nx, ny)
+
+    return None
+
+
 def find_door_room_guids(door, walls_by_guid, room_records):
     """ドアが実際に接する部屋(Room/Zone)のguid集合を返す。
 

@@ -8,6 +8,7 @@ properties/geometry込みで無制限に返しており、実測で約224万ト�
 確認する。
 """
 
+import asyncio
 import json
 
 from backend.agent import tools as agent_tools
@@ -133,3 +134,27 @@ def test_engine_windows_tool_classifies_by_adjacent_room_count(test_db):
     assert result["total"] == 1
     assert result["exterior_count"] == 1
     assert result["windows"][0]["classification"] == "exterior"
+
+
+def test_engine_legal_inputs_tool_lists_definitions_with_used_by(monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+
+    result = json.loads(agent_tools.engine_legal_inputs_tool.invoke({}))
+
+    by_key = {entry["key"]: entry for entry in result}
+    assert by_key["land_use_category"]["value"] == "residential"
+    assert by_key["land_use_category"]["used_by_rule_ids"] == ["effective_daylighting_ratio"]
+
+
+def test_engine_legal_rules_evaluate_tool_surfaces_missing_inputs(sample_elements, monkeypatch):
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+
+    result = json.loads(
+        asyncio.run(
+            agent_tools.engine_legal_rules_evaluate_tool.ainvoke({"rule_id": "effective_daylighting_ratio"})
+        )
+    )
+
+    assert result["items"] == []
+    assert [m["key"] for m in result["missing_inputs"]] == ["land_use_category"]

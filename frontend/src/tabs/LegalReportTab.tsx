@@ -64,6 +64,16 @@ function LegalReportTab() {
 
                 <p className="hint">{check.disclaimer}</p>
 
+                {check.missing_inputs.length > 0 && (
+                  <p className="error">
+                    未判定: このチェックには外部の法規条件(
+                    {check.missing_inputs.map((m) => m.label).join("、")}
+                    )が必要ですが未設定のため、判定を実行していません。
+                    backendの環境変数(キーを大文字化したもの、例:
+                    LAND_USE_CATEGORY)に値を設定し、backendを再起動してください。
+                  </p>
+                )}
+
                 <table className="legal-law-table">
                   <thead>
                     <tr>

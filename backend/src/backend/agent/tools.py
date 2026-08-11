@@ -40,6 +40,7 @@ from ..engine.equipment import find_room_equipment
 from ..engine.evacuation_engine import find_evacuation_routes
 from ..engine.relation_builder import rebuild_connections
 from ..engine.room_engine import analyze_room_adjacency
+from ..engine.legal_inputs import list_legal_inputs
 from ..engine.rule_engine import evaluate_legal_rule_by_id, load_legal_rules
 from ..engine.site import get_road_boundaries, get_site_boundary
 from ..engine.spatial import analyze_space
@@ -257,11 +258,38 @@ async def engine_legal_rules_evaluate_tool(rule_id: str) -> str:
     Legal Knowledge Builder(法令検索サービス)が接続されていれば、
     関連しそうな法令根拠(legal_sources)も添付される(未接続でも判定は継続)。
     rule_idの一覧はengine_legal_rules_list_toolで取得できる。
+
+    結果に"missing_inputs"が含まれる場合、そのルールはBIMデータだけでは
+    判定できず、外部の法規条件(用途地域等)が不足している(itemsは空になる)。
+    その場合は判定を諦めず、missing_inputsの各項目(key/label/description)
+    が何かをユーザーに具体的に尋ね、回答を得てから再度このツールを呼び直す
+    こと。値の設定方法はengine_legal_inputs_toolの説明を参照。
     """
     try:
         return _json(await evaluate_legal_rule_by_id(rule_id))
     except ValueError as exc:
         return _json({"error": str(exc)})
+
+
+@tool
+def engine_legal_inputs_tool() -> str:
+    """BIMデータからは判定できない法規条件(用途地域・防火地域・道路条件等)
+    の一覧と、現在値が設定されているかを返す。
+
+    engine_legal_rules_evaluate_toolの結果にmissing_inputsが含まれる場合や、
+    ユーザーから「どの法規条件が必要か」を聞かれた場合に使う。値は現状
+    backendの環境変数(キーを大文字化したもの、例: land_use_category→
+    LAND_USE_CATEGORY)からのみ読み込まれる——Archicadのカスタムプロパティ
+    からの自動取り込みは未対応。ユーザーに値を尋ねた後は、
+    「backendの環境変数<KEY>に設定し再起動してください」と案内すること
+    (このエージェントはArchicad・backendの設定を書き換える権限を持たない)。
+    """
+    used_by: dict[str, list[str]] = {}
+    for rule in load_legal_rules():
+        for key in rule.required_inputs:
+            used_by.setdefault(key, []).append(rule.rule_id)
+
+    return _json(list_legal_inputs(used_by))
 
 
 @tool
@@ -342,6 +370,7 @@ AGENT_TOOLS = [
     engine_code_accessible_doors_tool,
     engine_legal_rules_list_tool,
     engine_legal_rules_evaluate_tool,
+    engine_legal_inputs_tool,
     engine_accessibility_tool,
     engine_equipment_tool,
     engine_windows_tool,

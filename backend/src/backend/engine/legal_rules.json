@@ -16,5 +16,15 @@
     "check": "accessible_door_width",
     "verification": {"comparator": "gte", "threshold": 0.8, "unit": "m"},
     "disclaimer": "参考値です。バリアフリーに関する最小ドア幅の基準は建物用途・自治体条例により異なります。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "effective_daylighting_ratio",
+    "title": "有効採光面積比(建築基準法施行令20条、採光補正係数使用)",
+    "concept_id": "daylighting",
+    "applies_when": {"entity_type": "Zone"},
+    "check": "effective_daylighting_ratio",
+    "verification": {"comparator": "gte", "threshold": 0.14285714285714285, "unit": "ratio"},
+    "required_inputs": ["land_use_category"],
+    "disclaimer": "参考値です。建築基準法施行令第20条の採光補正係数(D/H×係数−定数)を用いた計算ですが、敷地境界線・前面道路がZoneとしてモデル化されていない、または開口部の所属壁・直上の建築物部分が特定できない場合は計算できません(その場合、実際の値は結果より高い可能性があります)。天窓・縁側等の補正係数、水平距離7m/5m/4m以上の緩和規定は未実装です。用途地域は環境変数LAND_USE_CATEGORY(既定residential)の指定値を使用しており、実際の用途地域と異なる場合は結果が変わります。法的な適合を保証するものではありません。"
   }
 ]

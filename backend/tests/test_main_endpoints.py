@@ -129,7 +129,9 @@ def test_engine_legal_rules_endpoint(api_client):
 
     assert response.status_code == 200
     rule_ids = {r["rule_id"] for r in response.json()}
-    assert rule_ids == {"daylighting_ratio", "accessible_door_width"}
+    assert rule_ids == {
+        "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
+    }
 
 
 def test_engine_legal_rules_evaluate_endpoint(api_client, sample_elements, monkeypatch):
@@ -147,6 +149,30 @@ def test_engine_legal_rules_evaluate_endpoint_404_for_unknown_rule(api_client):
     response = api_client.get("/engine/legal_rules/does_not_exist/evaluate")
 
     assert response.status_code == 404
+
+
+def test_engine_legal_inputs_endpoint(api_client, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+
+    response = api_client.get("/engine/legal_inputs")
+
+    assert response.status_code == 200
+    body = response.json()
+    by_key = {entry["key"]: entry for entry in body}
+    assert by_key["land_use_category"]["value"] == "residential"
+    assert by_key["land_use_category"]["used_by_rule_ids"] == ["effective_daylighting_ratio"]
+    assert by_key["kenpei_ritsu"]["used_by_rule_ids"] == []
+
+
+def test_engine_legal_rules_evaluate_endpoint_reports_missing_inputs(api_client, sample_elements, monkeypatch):
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+
+    response = api_client.get("/engine/legal_rules/effective_daylighting_ratio/evaluate")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == []
+    assert [m["key"] for m in body["missing_inputs"]] == ["land_use_category"]
 
 
 def test_engine_accessibility_endpoint(api_client, sample_elements):

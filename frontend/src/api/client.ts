@@ -498,6 +498,12 @@ export type LegalReportSource = {
   confidence: number | null;
 };
 
+export type LegalReportMissingInput = {
+  key: string;
+  label: string;
+  description: string | null;
+};
+
 export type LegalReportCheck = {
   rule_id: string;
   title: string;
@@ -508,6 +514,7 @@ export type LegalReportCheck = {
   disclaimer: string;
   legal_sources: LegalReportSource[];
   items: LegalReportItem[];
+  missing_inputs: LegalReportMissingInput[];
 };
 
 export type LegalReportResponse = {

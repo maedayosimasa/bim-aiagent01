@@ -16,10 +16,14 @@ def test_status_for_uses_comparator():
 def test_load_legal_rules_returns_known_rules():
     rules = {r.rule_id: r for r in rule_engine.load_legal_rules()}
 
-    assert set(rules) == {"daylighting_ratio", "accessible_door_width"}
+    assert set(rules) == {
+        "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
+    }
     assert rules["daylighting_ratio"].check == "daylighting_ratio"
     assert rules["daylighting_ratio"].concept_id == "daylighting"
     assert rules["accessible_door_width"].verification.threshold == 0.8
+    assert rules["effective_daylighting_ratio"].check == "effective_daylighting_ratio"
+    assert rules["effective_daylighting_ratio"].concept_id == "daylighting"
 
 
 def test_get_legal_rule_returns_none_for_unknown_id():
@@ -114,6 +118,77 @@ def test_evaluate_legal_rule_by_id_raises_for_unknown_rule():
         assert False, "ValueErrorが発生するはず"
     except ValueError:
         pass
+
+
+def test_evaluate_effective_daylighting_ratio_via_rule_id(test_db, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 5000], [0, 5000]]}),
+    )
+    # owner壁(ownerElementId)を持たないため所属壁を特定できず、D/Hが
+    # 計算できない(未解決)。engine/effective_daylighting.pyの詳しい
+    # 幾何シナリオ(D/H/係数の実際の計算)はtest_effective_daylighting.py参照。
+    test_db.insert_element(
+        "window1", "Window", "窓",
+        json.dumps({"archicad_details": {"width": 2, "height": 1}}),
+        json.dumps({"type": "point", "x": 0, "y": 2500, "z_min": 900, "z_max": 2000}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("effective_daylighting_ratio"))
+
+    assert result["concept_id"] == "daylighting"
+    assert result["threshold"] == 1 / 7
+    assert result["missing_inputs"] == []
+    item = result["items"][0]
+    assert item["target_guid"] == "room1"
+    assert item["status"] == "unknown"
+    assert item["evidence"]["unresolved_window_count"] == 1
+    assert item["evidence"]["land_use_category"] == "residential"
+
+
+def test_evaluate_effective_daylighting_ratio_reports_missing_inputs(test_db, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 5000], [0, 5000]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("effective_daylighting_ratio"))
+
+    assert result["items"] == []
+    assert result["legal_sources"] == []
+    assert result["missing_inputs"] == [
+        {
+            "key": "land_use_category",
+            "label": "用途地域",
+            "description": rule_engine.get_legal_input_definition("land_use_category").description,
+        }
+    ]
+
+
+def test_evaluate_legal_rule_without_required_inputs_has_empty_missing_inputs(test_db, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "door_wide", "Door", "広いドア",
+        json.dumps({"archicad_details": {"width": 0.9}}),
+        json.dumps({"type": "point", "x": 0, "y": 0}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("accessible_door_width"))
+
+    assert result["missing_inputs"] == []
+    assert result["items"] != []
 
 
 def test_run_accessible_door_width_check_structures_result(test_db, monkeypatch):

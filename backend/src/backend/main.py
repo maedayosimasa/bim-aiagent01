@@ -18,6 +18,8 @@ from .engine.site import get_site_boundary, get_road_boundaries
 from .engine.room_engine import analyze_room_adjacency
 from .engine.evacuation_engine import find_evacuation_routes
 from .engine.code_engine import check_daylighting, check_accessible_door_width
+from .engine.effective_daylighting import calculate_effective_daylighting
+from .engine.legal_inputs import list_legal_inputs
 from .engine.rule_engine import (
     run_daylighting_check,
     run_accessible_door_width_check,
@@ -353,6 +355,15 @@ def engine_code_accessible_doors():
     return check_accessible_door_width()
 
 
+@app.get("/engine/code/daylighting_effective")
+def engine_code_daylighting_effective():
+    # 建築基準法施行令20条の採光補正係数を用いた計算(engine/effective_daylighting.py)。
+    # check_daylighting()(窓面積/床面積の単純比)とは別物で、より法令に近いが
+    # 敷地境界線・前面道路のZoneモデリングに依存する等の制約がある(参照)。
+
+    return calculate_effective_daylighting()
+
+
 @app.get("/engine/rules/daylighting")
 async def engine_rules_daylighting():
     # check_daylighting()(engine/code_engine.py)をPASS/FAIL/UNKNOWN判定として
@@ -375,6 +386,21 @@ def engine_legal_rules():
     # (engine/rule_engine.py参照)。
 
     return [rule.model_dump() for rule in load_legal_rules()]
+
+
+@app.get("/engine/legal_inputs")
+def engine_legal_inputs():
+    # BIMデータからは判定できない法規条件(用途地域等、engine/legal_inputs.py)
+    # の一覧と、現在の解決状況(値の有無・どのルールが使うか)を返す。
+    # ユーザーがArchicad側でテンプレート化したいと考えている「法規条件」の
+    # 参照スキーマを兼ねる。
+
+    used_by: dict[str, list[str]] = {}
+    for rule in load_legal_rules():
+        for key in rule.required_inputs:
+            used_by.setdefault(key, []).append(rule.rule_id)
+
+    return list_legal_inputs(used_by)
 
 
 @app.get("/engine/legal_rules/{rule_id}/evaluate")

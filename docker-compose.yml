@@ -76,6 +76,9 @@ services:
       # 未設定でもbackendは起動するが、/agent/chat等はエラーを返す。
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - ANTHROPIC_AGENT_MODEL=${ANTHROPIC_AGENT_MODEL:-claude-opus-5}
+      # 有効採光面積比の法定計算(engine/effective_daylighting.py)で使う
+      # 用途地域カテゴリ。BIMデータからは判定できないため手動指定。
+      - LAND_USE_CATEGORY=${LAND_USE_CATEGORY:-residential}
     depends_on:
       - chromadb
       - tailscale

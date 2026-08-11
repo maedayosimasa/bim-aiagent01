@@ -32,6 +32,8 @@ from pydantic import BaseModel
 
 from ..legal_mcp import client as legal_client
 from .code_engine import check_accessible_door_width, check_daylighting
+from .effective_daylighting import calculate_effective_daylighting
+from .legal_inputs import get_legal_input_definition, resolve_legal_input
 
 _RULES_PATH = Path(__file__).parent / "legal_rules.json"
 
@@ -80,6 +82,11 @@ class LegalRule(BaseModel):
     ここで指定された関数が行う(JSON側は計算式を持たない)。"""
     verification: Verification
     disclaimer: str
+    required_inputs: list[str] = []
+    """BIMデータからは判定できず、外部から明示的に与える必要がある法規条件
+    のキー一覧(engine/legal_inputs.pyのLEGAL_INPUT_DEFINITIONSを参照)。
+    evaluate_legal_rule()は判定を実行する前にこれらが揃っているか確認し、
+    不足していればcheck関数を呼ばずにmissing_inputsとして返す。"""
 
 
 def _compute_daylighting_ratio() -> list[dict]:
@@ -112,6 +119,25 @@ def _compute_accessible_door_width() -> list[dict]:
     ]
 
 
+def _compute_effective_daylighting_ratio() -> list[dict]:
+    result = calculate_effective_daylighting()
+    return [
+        {
+            "target_guid": room["room_guid"],
+            "target_name": room["room_name"],
+            "measured_value": room["ratio"],
+            "evidence": {
+                "floor_area_m2": room["floor_area_m2"],
+                "effective_window_area_m2": room["effective_window_area_m2"],
+                "window_count": room["window_count"],
+                "unresolved_window_count": room["unresolved_window_count"],
+                "land_use_category": result["land_use_category"],
+            },
+        }
+        for room in result["rooms"]
+    ]
+
+
 # checkキー→実測値を計算するPython関数。新しい法令Ruleを足す場合、まず
 # ここに計算関数を登録してから legal_rules.json にエントリを追加する
 # (逆にJSON側だけを足しても、対応するcheck関数が無ければevaluate_legal_rule()
@@ -119,6 +145,7 @@ def _compute_accessible_door_width() -> list[dict]:
 RULE_CHECK_REGISTRY: dict[str, Callable[[], list[dict]]] = {
     "daylighting_ratio": _compute_daylighting_ratio,
     "accessible_door_width": _compute_accessible_door_width,
+    "effective_daylighting_ratio": _compute_effective_daylighting_ratio,
 }
 
 
@@ -160,7 +187,42 @@ async def _legal_sources_for_concept(concept_id: str) -> list[dict]:
     ]
 
 
+def _missing_inputs(rule: LegalRule) -> list[dict]:
+    missing = []
+
+    for key in rule.required_inputs:
+        if resolve_legal_input(key) is not None:
+            continue
+        definition = get_legal_input_definition(key)
+        missing.append({
+            "key": key,
+            "label": definition.label if definition else key,
+            "description": definition.description if definition else None,
+        })
+
+    return missing
+
+
 async def evaluate_legal_rule(rule: LegalRule) -> dict:
+    base_result = {
+        "rule_id": rule.rule_id,
+        "title": rule.title,
+        "concept_id": rule.concept_id,
+        "threshold": rule.verification.threshold,
+        "threshold_unit": rule.verification.unit,
+        "comparator": rule.verification.comparator.value,
+        "disclaimer": rule.disclaimer,
+    }
+
+    # BIMデータからは判定できない法規条件(用途地域等)が不足している場合、
+    # check関数を呼ばずに「何が足りないか」を返す。UNKNOWN(BIM実測値が
+    # 個別要素で欠けている状態)とは異なり、判定そのものが原理的に開始
+    # できない状態であることをAIエージェントに明確に伝えるため。
+    missing_inputs = _missing_inputs(rule)
+
+    if missing_inputs:
+        return {**base_result, "legal_sources": [], "items": [], "missing_inputs": missing_inputs}
+
     compute = RULE_CHECK_REGISTRY.get(rule.check)
     if compute is None:
         raise ValueError(f"未登録のcheckです: {rule.check}(RULE_CHECK_REGISTRYに未登録)")
@@ -180,17 +242,7 @@ async def evaluate_legal_rule(rule: LegalRule) -> dict:
         for m in measurements
     ]
 
-    return {
-        "rule_id": rule.rule_id,
-        "title": rule.title,
-        "concept_id": rule.concept_id,
-        "threshold": rule.verification.threshold,
-        "threshold_unit": rule.verification.unit,
-        "comparator": rule.verification.comparator.value,
-        "disclaimer": rule.disclaimer,
-        "legal_sources": legal_sources,
-        "items": items,
-    }
+    return {**base_result, "legal_sources": legal_sources, "items": items, "missing_inputs": []}
 
 
 async def evaluate_legal_rule_by_id(rule_id: str) -> dict:

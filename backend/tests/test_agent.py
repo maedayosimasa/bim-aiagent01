@@ -144,6 +144,7 @@ def _install_fake_report_model(monkeypatch, report_text):
 
 
 def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_elements):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
     fake_report_text = "## 採光有効面積比\nFAIL 2件\n\n## バリアフリー最小ドア幅\nUNKNOWN 1件\n\n総評: 参考値であり法的適合は保証しません。"
     _install_fake_report_model(monkeypatch, fake_report_text)
 
@@ -152,7 +153,9 @@ def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_
     assert result["report"] == fake_report_text
 
     checks_by_id = {check["rule_id"]: check for check in result["checks"]}
-    assert set(checks_by_id) == {"daylighting_ratio", "accessible_door_width"}
+    assert set(checks_by_id) == {
+        "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
+    }
 
     # sample_elementsのdoor001はproperties.archicad_details.widthを持たないため
     # 実測値が取得できず、判定はUNKNOWNになる(engine/code_engine.py参照)。
@@ -160,6 +163,36 @@ def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_
     assert len(door_check["items"]) == 1
     assert door_check["items"][0]["status"] == "unknown"
     assert door_check["legal_sources"] == []  # Legal Knowledge Builder未接続
+
+    # sample_elementsにはWindow要素が無いため、有効採光面積比は各部屋とも
+    # 0.0(未解決の窓は無いのでUNKNOWNではなく確定的にFAIL)になる。
+    effective_daylighting_check = checks_by_id["effective_daylighting_ratio"]
+    assert len(effective_daylighting_check["items"]) == 2  # room001, room002
+    assert all(item["status"] == "fail" for item in effective_daylighting_check["items"])
+
+
+def test_summarize_for_prompt_reports_missing_inputs_as_unjudged():
+    checks = [
+        {
+            "title": "有効採光面積比",
+            "rule_id": "effective_daylighting_ratio",
+            "comparator": "gte",
+            "threshold": 0.14285714285714285,
+            "threshold_unit": "ratio",
+            "disclaimer": "参考値です。",
+            "legal_sources": [],
+            "items": [],
+            "missing_inputs": [
+                {"key": "land_use_category", "label": "用途地域", "description": "..."},
+            ],
+        }
+    ]
+
+    summary = agent_report_graph._summarize_for_prompt(checks)
+
+    assert "未判定" in summary
+    assert "用途地域" in summary
+    assert "判定基準" not in summary  # 未判定チェックはPASS/FAIL集計を出さない
 
 
 def test_run_legal_report_without_api_key_raises(monkeypatch):
