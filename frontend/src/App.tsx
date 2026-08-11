@@ -4,6 +4,8 @@ import Dashboard from "./tabs/Dashboard";
 import ElementsTab from "./tabs/ElementsTab";
 import SearchTab from "./tabs/SearchTab";
 import LegalSearchTab from "./tabs/LegalSearchTab";
+import AgentChatTab from "./tabs/AgentChatTab";
+import LegalReportTab from "./tabs/LegalReportTab";
 import GraphTab from "./tabs/GraphTab";
 import PropertiesTab from "./tabs/PropertiesTab";
 import SpaceViewer3D from "./tabs/SpaceViewer3D";
@@ -14,6 +16,8 @@ const TABS = [
   { key: "elements", label: "要素同期", Component: ElementsTab },
   { key: "search", label: "意味検索", Component: SearchTab },
   { key: "legal-search", label: "法令検索", Component: LegalSearchTab },
+  { key: "agent", label: "AIエージェント", Component: AgentChatTab },
+  { key: "legal-report", label: "法規レポート", Component: LegalReportTab },
   { key: "graph", label: "空間関係グラフ", Component: GraphTab },
   { key: "viewer3d", label: "3Dビュー", Component: SpaceViewer3D },
   { key: "analysis-db", label: "解析結果DB", Component: AnalysisSnapshotTab },

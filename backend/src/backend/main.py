@@ -3,10 +3,14 @@ import os
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
+import anthropic
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
+from .agent import service as agent_service
+from .database import db as db_module
 from .engine.spatial import analyze_space
 from .engine.relation_builder import rebuild_connections
 from .engine.vector_store import index_elements, search_elements
@@ -22,6 +26,7 @@ from .engine.rule_engine import (
 )
 from .engine.accessibility import analyze_accessibility
 from .engine.equipment import find_room_equipment
+from .engine.window_classifier import classify_windows
 from .database.db import create_tables
 from .database.db import insert_element
 from mcp.server.transport_security import TransportSecuritySettings
@@ -80,11 +85,24 @@ mcp_asgi_app = mcp_server.streamable_http_app(
 )
 
 
+AGENT_CHECKPOINT_DB_PATH = db_module.BASE_DIR / "agent_checkpoints.db"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # session_manager はstreamable_http_app()呼び出し後でないと参照できない
     async with AsyncExitStack() as stack:
         await stack.enter_async_context(mcp_server.session_manager.run())
+
+        # LangGraphエージェントの会話履歴(session_id単位)をSQLiteへ永続化する
+        # checkpointer。bim_cache.dbとは別ファイルに分離する(スキーマが
+        # LangGraph管理下でこのプロジェクトの生sqlite3スキーマと無関係なため)。
+        checkpointer = await stack.enter_async_context(
+            AsyncSqliteSaver.from_conn_string(str(AGENT_CHECKPOINT_DB_PATH))
+        )
+        await checkpointer.setup()
+        agent_service.set_checkpointer(checkpointer)
+
         yield
 
 
@@ -160,6 +178,11 @@ class DeleteArchicadElementsRequest(BaseModel):
 
 class FocusArchicadElementsRequest(BaseModel):
     guids: list[str]
+
+
+class AgentChatRequest(BaseModel):
+    session_id: str
+    message: str
 
 
 
@@ -375,6 +398,15 @@ def engine_equipment():
     # KEYWORDS参照)。Objectの座標はバウンディングボックス近似のみ。
 
     return find_room_equipment()
+
+
+@app.get("/engine/windows")
+def engine_windows():
+    # 窓が外部窓か内部窓かを、隣接する部屋数から推定する(参考値。
+    # engine/window_classifier.py参照。Archicadの窓要素自体には外部/内部を
+    # 示す属性が無いため、ドアの外部判定と同じ次数ベースのヒューリスティック)。
+
+    return classify_windows()
 
 
 # ==============================
@@ -643,3 +675,62 @@ async def legal_graph_neighbors(node_id: str, depth: int = 1, edge_types: str | 
     types = edge_types.split(",") if edge_types else None
 
     return await _run_legal_action(legal_client.get_graph_neighbors(node_id, depth=depth, edge_types=types))
+
+
+# ==============================
+# AIエージェント API(LangGraph)
+# CLAUDE.md「⑨ RAG / AIエージェント層」の発話→ツール選択→実行→観察→次の発話
+# のループを初めて実装する。ツールは engine/*・database/db.py・legal_mcp
+# クライアントを直接呼ぶ読み取り専用・解析系のみ(agent/tools.py参照)。
+# 書き込み系のArchicad操作は監査ログ未整備のため意図的に含めていない。
+# 会話履歴はsession_id(LangGraphのthread_id)単位でSQLiteに永続化される。
+# ==============================
+
+@app.get("/agent/status")
+def agent_status():
+
+    return agent_service.get_connection_info()
+
+
+@app.post("/agent/chat")
+async def agent_chat(data: AgentChatRequest):
+
+    try:
+        return await agent_service.run_chat(data.session_id, data.message)
+    except agent_service.AgentNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except agent_service.ConversationTooLongError as exc:
+        # このsession_idの会話履歴が肥大化しており(過去にコンテキスト上限を
+        # 超える巨大なツール結果が書き込まれた等)、以後このセッションでは
+        # 二度と成功しない。413(Payload Too Large)でフロントエンドに区別
+        # させ、新しいセッションを開始するよう案内する。
+        raise HTTPException(status_code=413, detail=str(exc))
+    except anthropic.APIError as exc:
+        raise HTTPException(status_code=502, detail=f"Claude APIの呼び出しに失敗しました: {exc}")
+
+
+@app.get("/agent/history/{session_id}")
+async def agent_history(session_id: str):
+
+    try:
+        messages = await agent_service.get_history(session_id)
+    except agent_service.AgentNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {"session_id": session_id, "messages": messages}
+
+
+@app.post("/agent/legal_report")
+async def agent_legal_report():
+    # 法規チェック→引用条文添付→レポート生成、の複数ステップグラフ
+    # (agent/report_graph.py)。会話(session_id)とは無関係の単発実行で、
+    # 毎回、登録済み全ルール(engine/legal_rules.json)を対象に最初から実行する。
+
+    try:
+        return await agent_service.run_legal_report()
+    except agent_service.AgentNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except agent_service.ConversationTooLongError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
+    except anthropic.APIError as exc:
+        raise HTTPException(status_code=502, detail=f"Claude APIの呼び出しに失敗しました: {exc}")

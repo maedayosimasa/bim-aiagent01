@@ -3,26 +3,66 @@
 
 export const API_BASE = "http://localhost:8000";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
-    ...init,
-  });
+// timeoutMsを指定すると、その時間内にbackendから応答が無い場合にリクエストを
+// 中断してエラーにする(2026-08-11、AIエージェントが「考え中...」のまま
+// 無期限にハングして見えた問題への対策 — backend自体は数十秒でエラー応答を
+// 返していたが、backendプロセスの再起動等でTCP接続が宙に浮くと、ブラウザの
+// fetch()にはデフォルトのタイムアウトが無いため何も表示されないまま止まって
+// 見えることがあった)。
+async function request<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number }
+): Promise<T> {
+  const { timeoutMs, ...fetchInit } = init ?? {};
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timeoutId = timeoutMs
+    ? setTimeout(() => controller!.abort(), timeoutMs)
+    : undefined;
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`${path} failed: ${res.status} ${detail}`);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: fetchInit.body ? { "Content-Type": "application/json" } : undefined,
+      signal: controller?.signal,
+      ...fetchInit,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      // backend(FastAPI)のHTTPExceptionは{"detail": "..."}を返す。生JSONを
+      // そのままエラーメッセージに出すと読みにくいので、detailだけ取り出す。
+      let detail = text;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed.detail === "string") {
+          detail = parsed.detail;
+        }
+      } catch {
+        // JSONでなければtextのまま使う
+      }
+      throw new Error(`${path} failed: ${res.status} ${detail}`);
+    }
+
+    return res.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        `${path} がタイムアウトしました(${Math.round((timeoutMs ?? 0) / 1000)}秒応答がありませんでした)。バックエンドが再起動中でないか確認してください。`,
+        { cause: err }
+      );
+    }
+    throw err;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
-
-  return res.json();
 }
 
-const get = <T,>(path: string) => request<T>(path);
+const get = <T,>(path: string, timeoutMs?: number) => request<T>(path, { timeoutMs });
 
-const post = <T,>(path: string, body?: unknown) =>
+const post = <T,>(path: string, body?: unknown, timeoutMs?: number) =>
   request<T>(path, {
     method: "POST",
     body: body === undefined ? undefined : JSON.stringify(body),
+    timeoutMs,
   });
 
 // ==============================
@@ -374,4 +414,107 @@ export function deleteArchicadElements(guids: string[]) {
 // (カメラ移動には対応していない - Tapirにその機能がないため)
 export function focusArchicadElements(guids: string[]) {
   return post<unknown>("/archicad/elements/focus", { guids });
+}
+
+// ==============================
+// AIエージェント(LangGraph、backend/src/backend/agent/)
+// ツールは読み取り専用・解析系のみ(Archicad書き込み系ツールは未対応)。
+// 会話履歴はsession_id単位でバックエンド側(SQLite)に永続化される。
+// ==============================
+
+export type AgentStatus = {
+  configured: boolean;
+  model: string;
+};
+
+export type AgentToolCallResult = {
+  name: string;
+  args: Record<string, unknown>;
+  result: string;
+};
+
+export type AgentChatResponse = {
+  session_id: string;
+  response: string;
+  tool_calls: AgentToolCallResult[];
+};
+
+export type AgentHistoryMessage =
+  | { role: "human"; content: string }
+  | { role: "ai"; content: string }
+  | { role: "tool"; name: string; content: string };
+
+export type AgentHistoryResponse = {
+  session_id: string;
+  messages: AgentHistoryMessage[];
+};
+
+export function getAgentStatus() {
+  return get<AgentStatus>("/agent/status");
+}
+
+// ツール呼び出しを何度も往復する可能性があるため、他のAPI呼び出しより長め
+// (3分)のタイムアウトにする。これを超えても応答が無ければ、backendの
+// プロセス再起動等で接続が宙に浮いている可能性が高いと判断してエラーにする。
+const AGENT_TIMEOUT_MS = 180_000;
+
+export function sendAgentMessage(sessionId: string, message: string) {
+  return post<AgentChatResponse>(
+    "/agent/chat",
+    { session_id: sessionId, message },
+    AGENT_TIMEOUT_MS
+  );
+}
+
+export function getAgentHistory(sessionId: string) {
+  return get<AgentHistoryResponse>(
+    `/agent/history/${encodeURIComponent(sessionId)}`,
+    30_000
+  );
+}
+
+// 法規チェック→引用条文添付→レポート生成、の複数ステップグラフ
+// (backend/src/backend/agent/report_graph.py、LangGraphのStateGraph)。
+// run_chat/getAgentHistoryの会話エージェントとは別物で、session_idは使わない
+// (毎回、登録済み全ルールを対象に最初から実行する単発のパイプライン)。
+
+export type LegalReportStatus = "pass" | "fail" | "unknown" | "not_applicable";
+
+export type LegalReportItem = {
+  target_guid: string;
+  target_name: string | null;
+  status: LegalReportStatus;
+  measured_value: number | null;
+  unit: string | null;
+  evidence: Record<string, unknown>;
+};
+
+export type LegalReportSource = {
+  rule_id: string | null;
+  law_id: string | null;
+  node_id: string | null;
+  raw_sentence: string;
+  modality: string | null;
+  confidence: number | null;
+};
+
+export type LegalReportCheck = {
+  rule_id: string;
+  title: string;
+  concept_id: string;
+  threshold: number;
+  threshold_unit: string | null;
+  comparator: string;
+  disclaimer: string;
+  legal_sources: LegalReportSource[];
+  items: LegalReportItem[];
+};
+
+export type LegalReportResponse = {
+  checks: LegalReportCheck[];
+  report: string;
+};
+
+export function generateLegalReport() {
+  return post<LegalReportResponse>("/agent/legal_report", undefined, AGENT_TIMEOUT_MS);
 }

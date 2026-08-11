@@ -72,6 +72,10 @@ services:
       # docker-compose経由で動かす場合は、ホストのゲートウェイIPやTailscale
       # URL等、実際に到達可能なアドレスを指定すること。
       - LEGAL_API_URL=${LEGAL_API_URL:-}
+      # AIエージェント(LangGraph、/agent/*)がClaudeを呼び出すためのAPIキー。
+      # 未設定でもbackendは起動するが、/agent/chat等はエラーを返す。
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_AGENT_MODEL=${ANTHROPIC_AGENT_MODEL:-claude-opus-5}
     depends_on:
       - chromadb
       - tailscale

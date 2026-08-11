@@ -58,7 +58,7 @@ BIM空間知能エンジンは以下の順でデータが流れるパイプラ�
 | ⑥ | 空間知能エンジン Spatial Intelligence | △ | `engine/spatial.py`, `graph/analyzer.py`, `room.py` |
 | ⑦ | 解析結果ストア Analysis Results Store | △ | `database/db.py`の`engine_analysis_results`等、履歴を積まないスナップショットのみ |
 | ⑧ | 埋め込み/インデックス層 Embedding & Indexing | △ | `engine/vector_store.py`, ChromaDB |
-| ⑨ | RAG / AIエージェント層 | ✗ | 未着手。LLM呼び出し・エージェントループが一切無い |
+| ⑨ | RAG / AIエージェント層 | △ | `agent/`(2026-08-11追加、LangGraph + Claude API)。会話の永続化・ツール呼び出しループはあるが、書き込み系操作は未対応(下記参照) |
 | ⑩ | アクション/操作層 Action & Audit | △ | `archicad_mcp/server.py`の書き込み系ツールはあるが監査ログが無い |
 
 横断的関心事(全レイヤーに関わる。現状ほぼ未整備):
@@ -91,6 +91,21 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 - `client.py`: Legal Knowledge Builder APIへのHTTPクライアント(`httpx`)。接続先URLは`LEGAL_API_URL`環境変数、またはランタイムオーバーライド(`POST /legal/connection`)で決まる。
 - `main.py`の`/legal/*`(`search`/`laws`/`article`/`rules`/`reference`/`graph/neighbors`/`status`/`connection`)は薄いプロキシ(埋め込みモデル等の重い依存はbim-aiagent01側には持ち込まない。埋め込み計算・ChromaDB・条文データ・グラフ(GraphRAG)はすべてLegal Knowledge Builder側で完結する)。`graph/neighbors`はcontainment+引用関係+オントロジーを統合したグラフを起点ノードから多段階に辿る(GraphRAGの多段階検索、2026-08-10追加)。
 - frontend「法令検索」タブ(`LegalSearchTab.tsx`)は既存の「意味検索」タブ(`SearchTab.tsx`)とほぼ同じUIパターン。
+
+### AIエージェント層 (`agent/`, 2026-08-11追加)
+
+CLAUDE.md「⑨ RAG / AIエージェント層」の発話→ツール選択→実行→観察→次の発話ループを実装する。オーケストレーションはLangGraph(`langchain.agents.create_agent`、LangGraph 1.x移行後のprebuilt ReActエージェント。旧`langgraph.prebuilt.create_react_agent`はdeprecated)、LLMはAnthropic Claude(`langchain-anthropic`)。ベクトルストアは既存のChromaDB(`engine/vector_store.py`)をそのまま利用し、新規ミドルウェア(Qdrant/pgvector等)は導入していない。
+
+- `tools.py`: `engine/*`・`database/db.py`・`legal_mcp/client.py`を直接呼ぶ薄いラッパー(`@tool`デコレータ)。**意図的に読み取り専用・解析系のみ**を公開し、`move_archicad_element`/`delete_archicad_elements`/`set_archicad_property_value`等の書き込み系ツールとフルキャッシュ削除を伴う`sync_from_archicad`は含めていない——CLAUDE.md「⑩ アクション/操作層」に記載の通り監査ログが未整備なため、AIエージェントに書き込み権限を与えるのは監査ログ整備後に回した(意図的な安全側の設計判断)。
+  - **(2026-08-11実データで発見・同日修正)実際にANTHROPIC_API_KEYを設定して動かしたところ、実データ(5708要素)で`invalid_request_error: prompt is too long: 2190419 tokens > 1000000 maximum`が発生した。** 原因は`list_bim_elements_tool`が全要素をproperties/geometry込みで無制限にJSON化して返しており、実測で約224万トークン(Claude Opus 5のコンテキスト上限100万トークンの2倍超)あったこと。同様に`get_engine_analysis_snapshot_tool`/`analyze_bim_space_tool`もグラフの生データ(座標付きノード/エッジ、フロントエンドのグラフ可視化専用でLLMには不要)を含み約53万トークン、`get_graph_relation_snapshot_tool`も関係一覧の全件ダンプで約13万トークンあった。**対応**: 一覧/スナップショット系ツールを「絞り込み条件を省略すると件数サマリのみを返し、指定時も返却件数を上限(`_ELEMENT_LIST_LIMIT=200`/`_RELATION_LIST_LIMIT=100`)でクランプする」方針に統一。`analyze_bim_space_tool`/`get_engine_analysis_snapshot_tool`は`graph_data`を常に除外し`issues`を上位20件+総件数に絞る(`_drop_graph_data_and_cap_issues()`)。個別要素の詳細は新設の`get_bim_element_tool(guid)`で1件ずつ取得する方式に変更した。`search_bim_elements_tool`のn_resultsにも上限(50)を追加(LLMが過大な値を指定してもクランプされる)。修正後は実データで`list_bim_elements_tool()`が約400トークン、`analyze_bim_space_tool()`が約2200トークンまで縮小し、実際にAPIキーで動作確認済み。回帰テストは`tests/test_agent_tools.py`。
+- `graph.py`: `create_agent(model, tools=AGENT_TOOLS, system_prompt=..., checkpointer=...)`の薄いラッパー。会話ループの中でLLMが毎回どのツールを呼ぶか判断する、素直なReActエージェント。
+- `report_graph.py`(2026-08-11追加): **複数ステップの解析フロー(法規チェック→引用条文添付→レポート生成)**を、`graph.py`のReActループとは別に、LangGraphの`StateGraph`で明示的に組んだもの。ノードは`run_checks`(登録済み全`LegalRule`(`engine/legal_rules.json`)を`evaluate_legal_rule()`でPASS/FAIL/UNKNOWN判定する。引用条文の添付(`legal_sources`)も含め、LLMは一切呼ばない決定的な計算)→`generate_report`(判定結果の要約テキストをClaudeに渡し、日本語レポート文を生成する。LLMには数値の再計算・判定の上書きをさせず要約のみ担当させる)の固定順。`message_utils.py`にAIMessageからテキストを取り出す共通ヘルパーを切り出し、`service.py`と共有する。
+- `service.py`: セッション管理。`ANTHROPIC_API_KEY`未設定でもimport時にはクラッシュせず、実際に呼び出す時点で`AgentNotConfiguredError`を送出する(`archicad_mcp/client.py`/`legal_mcp/client.py`と同じ「未設定でもクラッシュしない」方針)。会話(`run_chat`)の履歴はLangGraphのcheckpointer(`AsyncSqliteSaver`、`agent_checkpoints.db`。`bim_cache.db`とはスキーマが無関係のため別ファイル)に`session_id`(LangGraphの`thread_id`)単位で永続化される——CLAUDE.md「⑨」に挙げていた「会話/セッションの永続化が無い」というギャップのうち会話ターン単位の永続化はこれで解消した(解析結果側の履歴化(⑦)は別課題として残る)。`run_legal_report`(法規レポート)はsession_id/checkpointerを使わない単発実行。
+  - **(2026-08-11発見・同日修正)一度でも巨大なツール結果が会話履歴に書き込まれてしまうと、ツール自体を直しても該当セッションは以後ずっと`prompt is too long`エラーを返し続けることが実データで発覚した。** LangGraphは会話ターンごとに全メッセージ履歴をcheckpointerへ蓄積し、次のターンでも毎回その全履歴をLLMへ送るため、上記の一覧ツール修正後もそのセッション自体は自然には回復しない(実際、この事故の直後にユーザーが同じセッションIDのまま送信を続け、毎回コンテキスト上限エラーで失敗する状態を引き起こした)。`_ainvoke_with_context_guard()`が`anthropic.BadRequestError`の`"prompt is too long"`を検知し、専用の`ConversationTooLongError`(「新しい会話を開始してください」という具体的な次の行動を示す)に変換して送出するようにした。`main.py`はこれをHTTP 413で返す(汎用の502とは区別)。
+- `main.py`の`/agent/status`(設定状態確認)・`/agent/chat`(`{session_id, message}` → `{response, tool_calls}`)・`/agent/history/{session_id}`・`/agent/legal_report`(POST、複数ステップグラフの実行)。モデルは`ANTHROPIC_AGENT_MODEL`環境変数(既定`claude-opus-5`)。
+- frontend「AIエージェント」タブ(`AgentChatTab.tsx`、2026-08-11追加)は`/agent/chat`とのチャットUI。会話セッションIDは`localStorage`に保持しタブを閉じても続きから会話できる。「法規レポート」タブ(`LegalReportTab.tsx`、2026-08-11追加)はボタン一つで`/agent/legal_report`を実行し、レポート文+チェック項目別の詳細表(PASS/FAIL/UNKNOWN・実測値・関連法令根拠)を表示する。
+  - **(2026-08-11発見・同日修正)「考え中...」が数分経っても終わらず無反応に見える不具合があった。** 原因は2つ複合していた: (1) backend自体は上記の`prompt is too long`エラーを約19秒で返していたが、backendプロセスの再起動(uvicorn `--reload`によるコード反映等)のタイミングでリクエストが宙に浮くと、ブラウザの`fetch()`にはデフォルトのタイムアウトが無く無期限に待ち続けてしまう。(2) 「考え中...」表示に経過時間が無く、実際に待っているのか完全に停止しているのか区別できなかった。**対応**: `api/client.ts`の`request()`に`AbortController`ベースのタイムアウト(エージェント関連呼び出しは3分)を追加し、タイムアウト時は専用のエラーメッセージを出す。エラーレスポンスの`{"detail": "..."}`から人間可読なメッセージだけを取り出して表示するよう共通化。`AgentChatTab.tsx`に経過秒数表示(`useElapsedSeconds`フック、1秒おきに更新)を追加し、30秒を超えたら「応答に時間がかかっています」の案内も出す。
+- テスト(`tests/test_agent.py`)は実際のAnthropic APIを呼ばず、`langchain_core.language_models.BaseChatModel`を実装した固定応答のフェイクモデルに差し替えて検証する(`test_tapir.py`のフェイクサーバーと同じ考え方)。`prompt is too long`エラーからの`ConversationTooLongError`変換も、`anthropic.BadRequestError`を送出するフェイクモデルで回帰テストしている。
 
 ### frontend
 
@@ -148,6 +163,7 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
   - **実データでの効果**(5708要素、floorIndexフィルタ適用後の最終値): ドアの接続数分布が3〜40件という無秩序な状態から、**1件(31件)・2件(56件)のみ**という建築的に正しいパターン(内部ドア=2部屋、外部ドア=1部屋)に収束した。避難経路が届かない部屋は143室中87室(接続0件の76室の内訳はPS/MB(配管・メーター)/バルコニー(引き戸でWindow扱いの可能性)/屋外階段/EV/前面道路が大半を占め、ドアが存在しないのが自然な場所が中心で、RAG等による用途分類が無い現状では妥当な結果と判断)。
 - **(2026-08-08対応済み・実データで検証)Wall-Door/Wall-Windowの"adjacent"にも同じowner壁ベースの絞り込みを適用した。** ユーザーが「解析結果DB」タブの空間関係グラフ一覧表を実際に見て、壁-ドア間の距離が300〜470mm前後とバラつく行が多数あることを指摘したのがきっかけ。実データで具体的な組を検証したところ、その壁が実際にはそのドアの所属壁ではなく(所属壁は別にあり距離0.0mmで存在)、単に600mm閾値内にたまたま入っていただけの無関係な壁(角で交わる隣の壁等)だった。`graph/door_ownership.py`に`find_owner_wall_guid()`を追加(Door/Window共通、`_door_owner_wall()`のpublicラッパー)し、`graph/relation.py`の`_refine_wall_opening_adjacency()`で、owner壁が特定できるDoor/Windowについては、owner壁以外との"adjacent"を`calculate_relations()`の結果から除外する(owner壁が特定できない場合は既存の距離ベース判定にフォールバック)。
   - **実データでの効果**(5708要素): 関係総数2867→**945件**に減少。Wall-Door"adjacent"は101件のドア全てで**所属壁1枚のみ・距離0.0mm**に完全収束(以前は0〜472.7mmに散らばっていた)。Wall-Window"adjacent"も110件全て同様。空間関係グラフ・関係一覧テーブルには、実際に一致する(所属する)組み合わせのみが表示されるようになった
+- **(2026-08-11追加)`engine/window_classifier.py`: 窓(Window)を外部窓/内部窓に分類する。** きっかけはAIエージェント(⑨)への「外壁の窓の数を教えて」という質問——Archicadの窓要素には外部/内部を示す属性が無く、エージェントはget_bim_element_toolで個別窓を何件も調べた末に「断定できません」と答えていた。これはエージェント(LLM)の限界ではなくエンジン側の実装不足と判断し、`find_exterior_doors()`(避難経路解析、歩行可能グラフ上の次数1)と同じ考え方をWindowに適用する専用モジュールを追加した:Room/Zone-Windowの"adjacent"関係で隣接する部屋数を数え、1部屋のみなら外部窓、2部屋以上なら内部窓、0部屋なら判定不能とする(`GET /engine/windows`、エージェントの`engine_windows_tool`)。**実データ(5708要素、窓114件)での結果**: 外部窓15件・内部窓91件・判定不能8件。ドアの判定と異なりRoom-Windowはowner壁ベースの精緻化(`graph/door_ownership.py`)が適用されておらず距離ベースの隣接判定のみのため、ドアの判定より粗い(既知の限界、モジュールのdocstringに明記)。**実データでの興味深い副産物**: この建物ではバルコニーがRoom/Zoneとしてモデル化されているため、「LD↔バルコニー」のような外皮開口が「2部屋に隣接」=内部窓と判定される(内部窓91件中43件がバルコニー系Zoneとの隣接)。エージェントはこの点を自分で発見し、「15+43≒58件が外壁開口の実質的な件数」という補足込みの回答を生成した(ツールは生データを返すのみで、この解釈はLLM側が行っている)。
 
 #### 追加モジュール案(2026-08-06 実現可否を調査、2026-08-08 実装)
 
@@ -175,13 +191,13 @@ backendはArchicad本体に直接接続しない。必ず「archicad-mcp」(Tapi
 - 埋め込み対象が要素単位の短い説明文のみ(`engine/vector_store.py`の`_describe_element()`)。部屋ごとに周辺要素をまとめた文書など、RAGでの検索精度を上げるチャンク戦略は未検討
 - **(2026-08-08発見・同日修正)フロントエンド「要素同期」タブの「検索インデックス化」ボタン(`POST /bim/index`)が実データで500エラーになるバグがあった。** `index_elements()`(`engine/vector_store.py`)がChromaDBの`collection.upsert()`を全要素一括(5708件)で呼んでいたが、ChromaDBには1回のupsertで送れる件数に上限があり(実測5461件)、これを超えると`chromadb.errors.InternalError`("Batch size of N is greater than max batch size of M")になっていた。ユーザーが敷地/道路Zoneを追加して要素数が上限を超えたことで、このセッション中に初めて顕在化した。`_UPSERT_BATCH_SIZE = 1000`で固定サイズに分割して複数回に分けてupsertするよう修正し、実データ(5708要素)で全件インデックス化・意味検索(`/bim/search`)の動作を確認済み
 
-### ⑨ RAG / AIエージェント層(最大のギャップ、実質未着手)
+### ⑨ RAG / AIエージェント層(2026-08-11時点で最小構成を実装済み)
 
-- LLM SDKへの依存が一切ない(`backend/pyproject.toml`にanthropic/openai等の記載なし)
-- `search_elements()`(`engine/vector_store.py`)は類似検索のヒットをそのまま返すのみで、LLMによる自然文回答生成(RAGのGeneration部分)が存在しない
-- エージェントのツール呼び出しループ(発話→ツール選択→実行→観察→次の発話)が存在しない。`archicad_mcp/server.py`のMCPツール群(`list_elements`/`search_bim_elements`/`update_element_properties`/`move_archicad_element`等)は「ローカルLLM等が呼べるように」用意されているが、実際に呼ぶエージェント本体が無い
-- 会話/セッションの永続化が無い
-- **(2026-08-09追加)** 建築関連法の条文検索(`/legal/search`等、上記「Legal Knowledge Builder連携」参照)は先に用意できた。将来エージェントループを実装する際、「法規チェック」ツールの土台として使える状態にはなっているが、これ自体はエージェント本体でもLLM呼び出しでもない(素朴なベクトル検索の結果を返すだけ)。
+- **(2026-08-11追加)** エージェント本体(`agent/`、LangGraph + Claude API)を実装した。詳細は上記「AIエージェント層(`agent/`, 2026-08-11追加)」参照。`POST /agent/chat`で発話→ツール選択→実行→観察→次の発話のループが動く。会話履歴はLangGraphのcheckpointer(`AsyncSqliteSaver`)で`session_id`単位に永続化される(上記の「会話/セッションの永続化が無い」というギャップは解消)。フロントエンドにも「AIエージェント」チャットタブを追加済み。
+- **(2026-08-11同日追加)** 複数ステップの解析フロー(法規チェック→引用条文添付→レポート生成)を`agent/report_graph.py`(LangGraphの`StateGraph`)として実装した。`run_agent`のReActループとは別物で、手順が固定された決定的なパイプライン。`POST /agent/legal_report`、frontend「法規レポート」タブから実行できる。
+- **意図的に残した制約**: 公開しているツールは読み取り専用・解析系のみ。`archicad_mcp/server.py`の書き込み系ツール(`update_element_properties`/`move_archicad_element`/`delete_archicad_elements`等)はエージェントには公開していない——監査ログ(下記⑩参照)が未整備のため、AIエージェントが自律的に実在の建物データを書き換えられる状態にするのは時期尚早と判断した。
+- **未着手のまま残っている項目**: 解析結果ストア(⑦)側の履歴化(いつ何が変わったか)は未着手のまま。`report_graph.py`は現状「法規チェック→レポート生成」の1系統のみで、他の複数ステップフロー(例: 避難経路解析→改善提案レポート)は未実装。
+- 建築関連法の条文検索(`/legal/search`等)は先に用意できていたため、エージェントのツールとしてそのままlegal_search_tool等でラップした(GraphRAGの多段階検索`legal_graph_neighbors_tool`も含む)。
 
 ### ⑩ アクション/操作層
 

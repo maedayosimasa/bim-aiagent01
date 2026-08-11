@@ -10,6 +10,8 @@ wheels/
 # Virtual environments
 .venv
 
-# Local SQLite cache
+# Local SQLite cache(WALモードの-shm/-wal付随ファイルも含む)
 *.db
+*.db-shm
+*.db-wal
 
