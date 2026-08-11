@@ -81,6 +81,18 @@ def _make_fake_tapir_server():
 
     @server.tool(name="GetAttributesByType")
     def get_attributes_by_type(input) -> dict:
+        attribute_type = (input or {}).get("attributeType")
+
+        if attribute_type == "Layer":
+            # 実データ(bim_cache.db)で確認した構造を模す。guid-1(Wall)は
+            # layerIndex=1のレイヤー(壁-躯体)に属するという想定。
+            return {
+                "attributes": [
+                    {"index": 1, "name": "壁-躯体", "attributeId": {"guid": "layer-wall"}},
+                    {"index": 88, "name": "敷地外_周辺建物.*", "attributeId": {"guid": "layer-context"}},
+                ]
+            }
+
         # 実データ(bim_cache.db)で確認した構造を模す: 番号なしの大分類
         # ("住宅")と、その番号付きサブタイプ("住宅-1")。guid-2のZoneは
         # サブタイプ側("住宅-1")に属する実室という想定。
@@ -264,6 +276,14 @@ def test_get_zone_categories():
     categories = _run(tapir.get_zone_categories(transport=transport))
 
     assert {c["name"] for c in categories} == {"住宅", "住宅-1"}
+
+
+def test_get_layer_names():
+    transport = InMemoryTransport(_make_fake_tapir_server())
+
+    layers = _run(tapir.get_layer_names(transport=transport))
+
+    assert {layer["name"] for layer in layers} == {"壁-躯体", "敷地外_周辺建物.*"}
 
 
 def test_get_selected_element_guids():

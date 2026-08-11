@@ -138,6 +138,10 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
         "z_min": 0,
         "z_max": 3000,
     }
+    # レイヤー名("壁-躯体"、layerIndex=1)が表示用情報として解決される
+    # ことを確認する(3Dビューが「敷地外_周辺建物」等の参考レイヤーを
+    # 区別して表示するために使う)。
+    assert json.loads(wall["properties"])["layer_name"] == "壁-躯体"
 
     zone = db.get_element("guid-2")
     # Archicad calls rooms "Zone", not "Room" - sync must not silently

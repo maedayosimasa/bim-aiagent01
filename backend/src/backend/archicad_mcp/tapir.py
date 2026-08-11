@@ -240,6 +240,25 @@ async def get_zone_categories(transport=None):
     return payload.get("attributes", [])
 
 
+async def get_layer_names(transport=None):
+    """レイヤー属性(名前・番号)の一覧を取得する。
+
+    GetDetailsOfElementsが返すproperties.layerIndexは番号のみで、レイヤー
+    名を含まない。実データを検証した結果、「敷地外_周辺建物」のような
+    レイヤーに、日影検討等の参考用に大まかなボリューム(例: 厚み4〜11m
+    という現実的でない厚みのSlab)が配置されているケースがあり、これを
+    実際の建物本体の要素と区別できずに3Dビュー(フロントエンド)へ
+    そのまま表示すると、あたかも建物のスラブが暴走しているように見える
+    不具合があった。sync_from_archicad()がこのレイヤー名を解決して
+    properties.layer_nameとして保存し、フロントエンドが「敷地外」等の
+    参考レイヤーを区別して表示できるようにする。
+    """
+    payload = await _call(
+        "GetAttributesByType", {"attributeType": "Layer"}, transport=transport
+    )
+    return payload.get("attributes", [])
+
+
 async def list_properties(transport=None):
     payload = await _call("GetAllProperties", transport=transport)
     return payload.get("properties", [])

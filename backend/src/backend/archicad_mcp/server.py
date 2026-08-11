@@ -157,11 +157,11 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     基本的に0(全件)を指定する想定。
 
     Tapirの GetAllElements + GetDetailsOfElements + Get3DBoundingBoxes +
-    GetAttributesByType(ZoneCategory) を使う。壁は芯線(begCoordinate/
-    endCoordinate、多角形壁はpolygonOutline)、部屋(Zone)は実境界
-    (polygonCoordinates)を使う。それ以外の要素種別は2D形状を持たない
-    ため、バウンディングボックスのXY投影で近似する。要素タイプはArchicad
-    の命名をそのまま使う(部屋は"Room"ではなく"Zone")。
+    GetAttributesByType(ZoneCategory / Layer) を使う。壁は芯線
+    (begCoordinate/endCoordinate、多角形壁はpolygonOutline)、部屋(Zone)
+    は実境界(polygonCoordinates)を使う。それ以外の要素種別は2D形状を
+    持たないため、バウンディングボックスのXY投影で近似する。要素タイプは
+    Archicadの命名をそのまま使う(部屋は"Room"ではなく"Zone")。
 
     ZoneはcategoryAttributeIdが指すゾーンカテゴリ名(例:"住宅-1")を解決し
     properties.zone_categoryに表示用の情報として保存する。個々の部屋か、
@@ -170,6 +170,12 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     graph/relation.pyのcalculate_relations()とgraph/room.pyのfind_rooms()
     は、テンプレートに依存しない幾何包含(graph/envelope.py)を根拠に
     大分類ゾーンを除外する。
+
+    全要素のlayerIndexが指すレイヤー名も解決し、properties.layer_nameに
+    保存する。3Dビュー(フロントエンド)で「敷地外_周辺建物」等の参考用
+    レイヤーの要素(日影検討用の大まかなマスボリューム等、実際の建物本体
+    とは別カテゴリ)を区別して表示するために使う(実データで、このレイヤー
+    に厚み4〜11mという現実的でないSlabが配置されていることを確認済み)。
     """
     all_guids = await tapir.get_all_element_guids()
     guids = all_guids if limit <= 0 else all_guids[:limit]
@@ -180,10 +186,12 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     details_list = await tapir.get_details_of_elements(guids)
     bounding_boxes = await tapir.get_bounding_boxes(guids)
     zone_categories = await tapir.get_zone_categories()
+    layers = await tapir.get_layer_names()
 
     category_name_by_guid = {
         category["attributeId"]["guid"]: category["name"] for category in zone_categories
     }
+    layer_name_by_index = {layer["index"]: layer["name"] for layer in layers}
 
     db.clear_elements()
 
@@ -205,6 +213,7 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         properties = {
             "floorIndex": details_item.get("floorIndex"),
             "layerIndex": details_item.get("layerIndex"),
+            "layer_name": layer_name_by_index.get(details_item.get("layerIndex")),
             "archicad_details": type_details,
             "zone_category": zone_category,
         }
