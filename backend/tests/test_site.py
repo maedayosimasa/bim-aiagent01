@@ -80,6 +80,73 @@ def test_get_road_boundaries_estimates_width_and_centerline(test_db):
     assert ys == {0, 20000}
 
 
+def test_find_zones_by_name_matches_mesh_by_archicad_id(test_db):
+    # MeshDetailsには"name"が無いため、Meshの実名は常に合成名
+    # ("Mesh_<guid先頭8文字>")になり、道路等のキーワードと一致しない。
+    # 実データで確認済みの通り、GetDetailsOfElementsが型に依らず返す共通の
+    # "id"フィールド(Archicad UIの「IDとカテゴリ」→「ID」欄)を
+    # properties.archicad_idとして保存し、これで照合する。
+    test_db.insert_element(
+        "mesh_road", "Mesh", "Mesh_12345678",
+        json.dumps({"archicad_id": "前面道路"}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [6000, 0], [6000, 20000], [0, 20000]],
+        }),
+    )
+
+    matches = find_zones_by_name("道路")
+
+    assert [m["guid"] for m in matches] == ["mesh_road"]
+
+
+def test_find_zones_by_name_matches_mesh_by_layer_name(test_db):
+    # archicad_idが無い/一致しない場合のフォールバックとして
+    # properties.layer_name(sync_from_archicad()が解決するレイヤー名)でも照合する。
+    test_db.insert_element(
+        "mesh_road", "Mesh", "Mesh_12345678",
+        json.dumps({"layer_name": "前面道路"}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [6000, 0], [6000, 20000], [0, 20000]],
+        }),
+    )
+
+    matches = find_zones_by_name("道路")
+
+    assert [m["guid"] for m in matches] == ["mesh_road"]
+
+
+def test_find_zones_by_name_mesh_without_matching_layer_name_excluded(test_db):
+    test_db.insert_element(
+        "mesh_other", "Mesh", "Mesh_abcdefgh",
+        json.dumps({"layer_name": "外構"}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [6000, 0], [6000, 20000], [0, 20000]],
+        }),
+    )
+
+    assert find_zones_by_name("道路") == []
+
+
+def test_get_road_boundaries_supports_mesh(test_db):
+    test_db.insert_element(
+        "mesh_road", "Mesh", "Mesh_12345678",
+        json.dumps({"layer_name": "前面道路"}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[0, 0], [6000, 0], [6000, 20000], [0, 20000]],
+        }),
+    )
+
+    roads = get_road_boundaries()
+
+    assert len(roads) == 1
+    assert roads[0]["guid"] == "mesh_road"
+    assert roads[0]["estimated_width_m"] == 6.0
+
+
 def test_find_zones_by_name_skips_invalid_geometry_json(test_db):
     # 破損したジオメトリ文字列(実データでの座標欠損等を想定)。名前が
     # 一致してもジオメトリが解釈できない場合は結果から除外する。

@@ -141,7 +141,13 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
     # レイヤー名("壁-躯体"、layerIndex=1)が表示用情報として解決される
     # ことを確認する(3Dビューが「敷地外_周辺建物」等の参考レイヤーを
     # 区別して表示するために使う)。
-    assert json.loads(wall["properties"])["layer_name"] == "壁-躯体"
+    wall_properties = json.loads(wall["properties"])
+    assert wall_properties["layer_name"] == "壁-躯体"
+    # GetDetailsOfElementsが型に依らず返す共通の"id"フィールド(Archicad UI
+    # の「IDとカテゴリ」→「ID」欄)がproperties.archicad_idとして保存される
+    # ことを確認する。Mesh等name(details.name)を持たない型がこれを使って
+    # 名前検索できるようになるための土台(engine/site.py参照)。
+    assert wall_properties["archicad_id"] == "guid-1"
 
     zone = db.get_element("guid-2")
     # Archicad calls rooms "Zone", not "Room" - sync must not silently

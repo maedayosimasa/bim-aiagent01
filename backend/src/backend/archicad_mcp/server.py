@@ -158,10 +158,13 @@ async def sync_from_archicad(limit: int = 50) -> dict:
 
     Tapirの GetAllElements + GetDetailsOfElements + Get3DBoundingBoxes +
     GetAttributesByType(ZoneCategory / Layer) を使う。壁は芯線
-    (begCoordinate/endCoordinate、多角形壁はpolygonOutline)、部屋(Zone)
-    は実境界(polygonCoordinates)を使う。それ以外の要素種別は2D形状を
+    (begCoordinate/endCoordinate、多角形壁はpolygonOutline)、部屋(Zone)・
+    Mesh(2026-08-13追加、道路等の地形をMeshでモデリングする運用に対応)は
+    実境界(polygonCoordinates)を使う。それ以外の要素種別は2D形状を
     持たないため、バウンディングボックスのXY投影で近似する。要素タイプは
     Archicadの命名をそのまま使う(部屋は"Room"ではなく"Zone")。
+    MeshはZoneと違って実名("name")を持たないため、engine/site.pyが
+    Meshを名前検索する際はproperties.layer_name(下記)を代わりに使う。
 
     ZoneはcategoryAttributeIdが指すゾーンカテゴリ名(例:"住宅-1")を解決し
     properties.zone_categoryに表示用の情報として保存する。個々の部屋か、
@@ -176,6 +179,15 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     レイヤーの要素(日影検討用の大まかなマスボリューム等、実際の建物本体
     とは別カテゴリ)を区別して表示するために使う(実データで、このレイヤー
     に厚み4〜11mという現実的でないSlabが配置されていることを確認済み)。
+
+    (2026-08-13追加)GetDetailsOfElementsが返す"id"(型に依存しない共通
+    必須フィールド。Archicad UIの「分類とプロパティ」パネルの「IDとカテゴリ」
+    グループの「ID」欄そのもので、Zoneの実名と違い全要素タイプに存在する。
+    実データで確認: {"type": "Mesh", "id": "塗膜防水", ...})を
+    properties.archicad_idとして保存する。以前はこのフィールドを一切
+    読んでいなかった。Meshには(Zoneと違い)details.nameが無いため
+    (archicad_mcp/tapir.pyのモジュールdocstring参照)、engine/site.pyが
+    Meshを名前検索する際はこのarchicad_idを使う。
     """
     all_guids = await tapir.get_all_element_guids()
     guids = all_guids if limit <= 0 else all_guids[:limit]
@@ -214,6 +226,7 @@ async def sync_from_archicad(limit: int = 50) -> dict:
             "floorIndex": details_item.get("floorIndex"),
             "layerIndex": details_item.get("layerIndex"),
             "layer_name": layer_name_by_index.get(details_item.get("layerIndex")),
+            "archicad_id": details_item.get("id") or None,
             "archicad_details": type_details,
             "zone_category": zone_category,
         }

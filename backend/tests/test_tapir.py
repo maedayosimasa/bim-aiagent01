@@ -439,6 +439,38 @@ def test_details_to_geometry_zone_uses_real_boundary():
     }
 
 
+def test_details_to_geometry_mesh_uses_real_footprint():
+    # Coordinate3D has "z" too (Mesh represents terrain level changes),
+    # but only x/y feed the 2D footprint - matches _coords_to_points().
+    geometry = tapir.details_to_geometry(
+        "Mesh",
+        {
+            "level": 0,
+            "skirtType": "WithSkirt",
+            "skirtLevel": -1,
+            "polygonCoordinates": [
+                {"x": 0, "y": 0, "z": 0},
+                {"x": 6, "y": 0, "z": 0.2},
+                {"x": 6, "y": 20, "z": 0.1},
+                {"x": 0, "y": 20, "z": 0},
+            ],
+        },
+    )
+
+    assert geometry == {
+        "type": "polygon",
+        "points": [[0, 0], [6000, 0], [6000, 20000], [0, 20000]],
+    }
+
+
+def test_details_to_geometry_falls_back_on_degenerate_mesh_polygon():
+    geometry = tapir.details_to_geometry(
+        "Mesh", {"polygonCoordinates": [{"x": 0, "y": 0, "z": 0}]}, None
+    )
+
+    assert geometry == {"type": "point", "x": 0, "y": 0}
+
+
 def test_details_to_geometry_falls_back_to_bounding_box_for_unhandled_type():
     bbox_item = {
         "boundingBox3D": {
@@ -470,6 +502,10 @@ def test_details_to_name_falls_back_to_synthetic_name():
     assert tapir.details_to_name("Wall", "abcdefgh-1234", {"name": "ignored"}) == (
         "Wall_abcdefgh"
     )
+    # MeshDetails has no "name" field at all (unlike ZoneDetails) - a
+    # Mesh's user-facing label has to come from elsewhere (site.py falls
+    # back to properties.layer_name).
+    assert tapir.details_to_name("Mesh", "abcdefgh-1234", {}) == "Mesh_abcdefgh"
 
 
 def test_calling_without_input_wrapper_fails_like_the_real_server():

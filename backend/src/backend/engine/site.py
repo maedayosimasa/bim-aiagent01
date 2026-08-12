@@ -16,6 +16,21 @@ from ..graph.geometry import geometry_from_json
 # できず、Get3DBoundingBoxesによる矩形近似(bounding_box_to_geometry())に
 # しかならない。そのため現状はZoneとしてモデリングされている前提でのみ
 # 敷地境界線・道路を検出する。
+#
+# (2026-08-13追加)道路をMeshでモデリングする運用にも対応する。MeshDetails
+# にはZoneと違って"name"が無いため(tapir.pyのモジュールdocstring参照)、
+# details_to_geometry()はMeshでも実footprint(polygonCoordinates)をそのまま
+# 保存できるようになったが、details_to_name()は依然として合成名
+# "Mesh_<guid>"しか返せない。そのためMeshの検索キーはZone/Roomと同じ
+# element["name"]では機能せず、代わりに以下2つのproperties値を照合する
+# (実データ・実際のArchicad UIで確認済み):
+#   - properties.archicad_id: GetDetailsOfElementsが型に依らず返す共通の
+#     "id"フィールド。Archicad UIの「分類とプロパティ」パネル→「IDとカテゴリ」
+#     グループ→「ID」欄そのもの(実データで確認: id="塗膜防水"等)。ユーザーが
+#     Meshを選択してこの欄に「前面道路」と入力するだけで設定できる、
+#     Mesh向けの主な照合キー。
+#   - properties.layer_name: Archicad側の「レイヤー」属性名。ユーザーが
+#     archicad_idの代わりにレイヤー名で運用したい場合のフォールバック。
 _MM2_PER_M2 = 1_000_000
 _MM_PER_M = 1_000
 
@@ -37,17 +52,39 @@ def _zone_summary(element):
     }
 
 
-def find_zones_by_name(keyword):
-    """名前にkeywordを含むZone(Room)を実データ(SQLiteキャッシュ)から検索する。
+def _matches_keyword(element, keyword):
+    if keyword in (element["name"] or ""):
+        return True
 
+    if element["type"] != "Mesh":
+        return False
+
+    try:
+        properties = json.loads(element["properties"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+
+    for value in (properties.get("archicad_id"), properties.get("layer_name")):
+        if value and keyword in value:
+            return True
+
+    return False
+
+
+def find_zones_by_name(keyword):
+    """keywordに一致するZone(Room)/Meshを実データ(SQLiteキャッシュ)から検索する。
+
+    Zone/Roomはelement["name"](Archicadの実名)で、Meshは
+    properties.archicad_id(Archicad UIの「IDとカテゴリ」→「ID」欄)または
+    properties.layer_nameで照合する(Meshに"name"が無いため)。
     複数件ヒットする場合(角地で道路が2本あるなど)も想定し、常にリストで返す。
     """
 
-    zones = [e for e in get_elements() if e["type"] in ("Zone", "Room")]
+    zones = [e for e in get_elements() if e["type"] in ("Zone", "Room", "Mesh")]
 
     matches = []
     for zone in zones:
-        if keyword not in (zone["name"] or ""):
+        if not _matches_keyword(zone, keyword):
             continue
         summary = _zone_summary(zone)
         if summary is not None:

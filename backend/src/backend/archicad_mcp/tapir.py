@@ -31,6 +31,16 @@ guessed. Notably:
   - Zone: {"name": str, "polygonCoordinates": [{x,y}, ...] (>=3), ...} -
     this is the room's real boundary and a real display name, unlike
     every other type here.
+  - Mesh: {"level", "skirtType", "skirtLevel", "polygonCoordinates":
+    [{x,y,z}, ...] (>=3), "polygonArcs", "holes", "sublines"} - confirmed
+    against MeshDetails in common_schema_definitions.js. Unlike Zone this
+    has no "name" field at all, so details_to_name() still falls back to
+    the synthetic "Mesh_<guid>" label for it - callers that need to find
+    a specific Mesh by a user-given label (e.g. site.py identifying a
+    "前面道路" Mesh) must use another per-element label Archicad actually
+    exposes, such as the resolved layer name (properties.layer_name,
+    populated by sync_from_archicad() via GetAttributesByType), not the
+    element name.
   - Everything else (Door, Window, Object, ...) has no direct 2D outline
     in "details" - LibPartBasedElementDetails only carries the owning
     wall's id, not a position. Get3DBoundingBoxes remains the only
@@ -393,6 +403,16 @@ def details_to_geometry(element_type, details, bounding_box_item=None):
             }
 
     elif element_type == "Zone":
+        coords = details.get("polygonCoordinates") or []
+        if len(coords) >= 3:
+            return {"type": "polygon", "points": _coords_to_points(coords), **z_range}
+
+    elif element_type == "Mesh":
+        # MeshDetails.polygonCoordinates is a Coordinate3D list (has "z"
+        # per point, for the terrain's level changes), but _coords_to_points
+        # only reads "x"/"y" - the real footprint shape (not axis-aligned
+        # bounding-box approximation) is what site.py needs to estimate a
+        # road's width/centerline correctly for a non-rectangular Mesh.
         coords = details.get("polygonCoordinates") or []
         if len(coords) >= 3:
             return {"type": "polygon", "points": _coords_to_points(coords), **z_range}
