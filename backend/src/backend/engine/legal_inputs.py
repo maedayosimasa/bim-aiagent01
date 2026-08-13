@@ -139,6 +139,20 @@ LEGAL_INPUT_DEFINITIONS: dict[str, LegalInputDefinition] = {
         ),
         category="日影・斜線",
     ),
+    "kitagawa_shasen_kubun": LegalInputDefinition(
+        key="kitagawa_shasen_kubun",
+        label="北側斜線制限の適用区分",
+        description=(
+            "low_rise(第一種/第二種低層住居専用地域・田園住居地域、立ち上がり"
+            "5m)/mid_rise(第一種/第二種中高層住居専用地域、立ち上がり10m)/"
+            "not_applicable(それ以外の用途地域、北側斜線制限の対象外)の"
+            "いずれか。engine/north_slant_envelope.pyが使用する。用途地域の"
+            "細分類(低層/中高層の区別)はland_use_category(residential/"
+            "industrial/commercial)だけでは判定できないため、この専用キーで"
+            "明示的に指定する(推測しない)。"
+        ),
+        category="日影・斜線",
+    ),
 }
 
 

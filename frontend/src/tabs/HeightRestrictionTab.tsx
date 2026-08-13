@@ -1,47 +1,84 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  approveRoadSlantEnvelope,
+  approveHeightRestrictionEnvelope,
+  getAdjacentBoundarySlantEnvelope,
+  getNorthSlantEnvelope,
   getRoadSlantEnvelope,
   getWriteAuditLog,
+  proposeAdjacentBoundarySlantEnvelope,
+  proposeNorthSlantEnvelope,
   proposeRoadSlantEnvelope,
-  type RoadSlantEnvelopeEntry,
-  type RoadSlantEnvelopeProposal,
+  type HeightRestrictionEnvelopeProposal,
+  type HeightRestrictionEnvelopeVertex,
 } from "../api/client";
 
+type EnvelopeType = "road" | "adjacent" | "north";
+
+type EnvelopeEntry = {
+  site_guid: string;
+  site_name: string;
+  resolved: boolean;
+  vertices: HeightRestrictionEnvelopeVertex[];
+};
+
+const ENVELOPE_LABELS: Record<EnvelopeType, string> = {
+  road: "道路斜線制限(56条1項1号)",
+  adjacent: "隣地斜線制限(56条1項2号)",
+  north: "北側斜線制限(56条1項3号)",
+};
+
 const LAND_USE_OPTIONS: { value: string; label: string }[] = [
-  { value: "residential", label: "住居系(勾配1.25)" },
-  { value: "commercial", label: "商業系(勾配1.5)" },
-  { value: "industrial", label: "工業系(勾配1.5)" },
+  { value: "residential", label: "住居系" },
+  { value: "commercial", label: "商業系" },
+  { value: "industrial", label: "工業系" },
 ];
 
-function heightRange(entry: RoadSlantEnvelopeEntry): string {
+const KITAGAWA_KUBUN_OPTIONS: { value: string; label: string }[] = [
+  { value: "low_rise", label: "低層住居専用地域等(立ち上がり5m)" },
+  { value: "mid_rise", label: "中高層住居専用地域等(立ち上がり10m)" },
+  { value: "not_applicable", label: "対象外の用途地域" },
+];
+
+function heightRange(entry: EnvelopeEntry): string {
   if (!entry.resolved || entry.vertices.length === 0) return "-";
   const heights = entry.vertices.map((v) => v.z_m);
-  const min = Math.min(...heights);
-  const max = Math.max(...heights);
-  return `${min.toFixed(2)}m 〜 ${max.toFixed(2)}m`;
+  return `${Math.min(...heights).toFixed(2)}m 〜 ${Math.max(...heights).toFixed(2)}m`;
 }
 
 function HeightRestrictionTab() {
   const queryClient = useQueryClient();
+  const [envelopeType, setEnvelopeType] = useState<EnvelopeType>("road");
   const [landUseCategory, setLandUseCategory] = useState("residential");
+  const [kitagawaShasenKubun, setKitagawaShasenKubun] = useState("low_rise");
+  const [northDegrees, setNorthDegrees] = useState<string>("");
   const [previewed, setPreviewed] = useState(false);
   const [approvedResults, setApprovedResults] = useState<Record<number, string | null>>({});
   const [showAuditLog, setShowAuditLog] = useState(false);
 
   const previewQuery = useQuery({
-    queryKey: ["road-slant-envelope", landUseCategory],
-    queryFn: () => getRoadSlantEnvelope(landUseCategory),
+    queryKey: ["height-restriction-envelope", envelopeType, landUseCategory, kitagawaShasenKubun, northDegrees],
+    queryFn: async (): Promise<EnvelopeEntry[]> => {
+      if (envelopeType === "road") return getRoadSlantEnvelope(landUseCategory);
+      if (envelopeType === "adjacent") return getAdjacentBoundarySlantEnvelope(landUseCategory);
+      return getNorthSlantEnvelope(kitagawaShasenKubun, northDegrees ? Number(northDegrees) : undefined);
+    },
     enabled: previewed,
   });
 
   const proposeMutation = useMutation({
-    mutationFn: () => proposeRoadSlantEnvelope(landUseCategory),
+    mutationFn: async (): Promise<{
+      proposals: HeightRestrictionEnvelopeProposal<EnvelopeEntry>[];
+      envelopes: EnvelopeEntry[];
+    }> => {
+      if (envelopeType === "road") return proposeRoadSlantEnvelope(landUseCategory);
+      if (envelopeType === "adjacent") return proposeAdjacentBoundarySlantEnvelope(landUseCategory);
+      return proposeNorthSlantEnvelope(kitagawaShasenKubun, northDegrees ? Number(northDegrees) : undefined);
+    },
   });
 
   const approveMutation = useMutation({
-    mutationFn: (proposalId: number) => approveRoadSlantEnvelope(proposalId),
+    mutationFn: (proposalId: number) => approveHeightRestrictionEnvelope(proposalId),
     onSuccess: async (data, proposalId) => {
       setApprovedResults((prev) => ({ ...prev, [proposalId]: data.result_guid }));
       await queryClient.invalidateQueries({ queryKey: ["write-audit-log"] });
@@ -54,37 +91,96 @@ function HeightRestrictionTab() {
     enabled: showAuditLog,
   });
 
-  const resolvedEntries = (previewQuery.data ?? []).filter((e) => e.resolved);
+  const previewData = previewQuery.data ?? [];
+  const resolvedEntries = previewData.filter((e) => e.resolved);
+  const proposals = proposeMutation.data?.proposals ?? [];
+
+  const resetPreview = () => {
+    setPreviewed(false);
+    proposeMutation.reset();
+  };
 
   return (
     <div className="tab-panel">
-      <h2>高さ制限(道路斜線制限)</h2>
+      <h2>高さ制限(斜線制限)</h2>
 
       <p className="hint">
-        建築基準法56条1項1号の道路斜線制限を、敷地境界線Zoneと前面道路Zoneの
-        幾何データから近似計算し、確認用のMesh要素としてArchicad本体へ
-        書き込めます(参考値、法的な適合を保証するものではありません)。
-        Archicadへの書き込みは必ず内容を確認し、明示的に承認した場合のみ
-        実行されます(許可制)。
+        建築基準法56条1項の斜線制限を、敷地境界線Zone等の幾何データから近似
+        計算し、確認用のMesh要素としてArchicad本体へ書き込めます(参考値、
+        法的な適合を保証するものではありません)。Archicadへの書き込みは
+        必ず内容を確認し、明示的に承認した場合のみ実行されます(許可制)。
       </p>
 
       <div className="status-line">
         <label>
-          用途地域:{" "}
+          種類:{" "}
           <select
-            value={landUseCategory}
+            value={envelopeType}
             onChange={(e) => {
-              setLandUseCategory(e.target.value);
-              setPreviewed(false);
+              setEnvelopeType(e.target.value as EnvelopeType);
+              resetPreview();
             }}
           >
-            {LAND_USE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
+            {(Object.keys(ENVELOPE_LABELS) as EnvelopeType[]).map((type) => (
+              <option key={type} value={type}>
+                {ENVELOPE_LABELS[type]}
               </option>
             ))}
           </select>
         </label>
+
+        {(envelopeType === "road" || envelopeType === "adjacent") && (
+          <label>
+            用途地域:{" "}
+            <select
+              value={landUseCategory}
+              onChange={(e) => {
+                setLandUseCategory(e.target.value);
+                resetPreview();
+              }}
+            >
+              {LAND_USE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        {envelopeType === "north" && (
+          <>
+            <label>
+              適用区分:{" "}
+              <select
+                value={kitagawaShasenKubun}
+                onChange={(e) => {
+                  setKitagawaShasenKubun(e.target.value);
+                  resetPreview();
+                }}
+              >
+                {KITAGAWA_KUBUN_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              真北の角度(度、省略時はArchicadから取得):{" "}
+              <input
+                type="number"
+                value={northDegrees}
+                onChange={(e) => {
+                  setNorthDegrees(e.target.value);
+                  resetPreview();
+                }}
+                placeholder="Archicadから取得"
+              />
+            </label>
+          </>
+        )}
+
         <button onClick={() => setPreviewed(true)}>計算する</button>
       </div>
 
@@ -103,10 +199,10 @@ function HeightRestrictionTab() {
               </tr>
             </thead>
             <tbody>
-              {previewQuery.data.map((entry) => (
+              {previewData.map((entry) => (
                 <tr key={entry.site_guid}>
                   <td>{entry.site_name}</td>
-                  <td>{entry.resolved ? "計算可能" : "前面道路が見つからず判定不能"}</td>
+                  <td>{entry.resolved ? "計算可能" : "判定不能(必要な情報が不足)"}</td>
                   <td>{entry.vertices.length}</td>
                   <td>{heightRange(entry)}</td>
                 </tr>
@@ -127,10 +223,10 @@ function HeightRestrictionTab() {
       {proposeMutation.data && (
         <div className="height-restriction-proposals">
           <h3>提案内容(まだArchicadへは書き込まれていません)</h3>
-          {proposeMutation.data.proposals.length === 0 && (
+          {proposals.length === 0 && (
             <p className="hint">提案できる敷地がありませんでした。</p>
           )}
-          {proposeMutation.data.proposals.map((proposal: RoadSlantEnvelopeProposal) => {
+          {proposals.map((proposal) => {
             const approvedGuid = approvedResults[proposal.proposal_id];
             return (
               <div key={proposal.proposal_id} className="height-restriction-proposal-card">

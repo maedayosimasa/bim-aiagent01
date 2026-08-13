@@ -248,32 +248,93 @@ def test_engine_road_slant_envelope_propose_endpoint_creates_audit_log(api_clien
     assert entries[0]["status"] == "proposed"
 
 
-def test_engine_road_slant_envelope_approve_endpoint_calls_write_flow(api_client, monkeypatch):
+def test_engine_height_restrictions_approve_endpoint_calls_write_flow(api_client, monkeypatch):
     from backend import main as main_module
 
     async def fake_approve(proposal_id):
         assert proposal_id == 42
         return {"proposal_id": 42, "result_guid": "guid-xyz", "raw_result": {}}
 
-    monkeypatch.setattr(main_module, "approve_road_slant_envelope_mesh", fake_approve)
+    monkeypatch.setattr(main_module, "approve_envelope_mesh", fake_approve)
 
-    response = api_client.post("/engine/road_slant_envelope/approve", json={"proposal_id": 42})
+    response = api_client.post("/engine/height_restrictions/approve", json={"proposal_id": 42})
 
     assert response.status_code == 200
     assert response.json()["result_guid"] == "guid-xyz"
 
 
-def test_engine_road_slant_envelope_approve_endpoint_400_for_invalid_proposal(api_client, monkeypatch):
+def test_engine_height_restrictions_approve_endpoint_400_for_invalid_proposal(api_client, monkeypatch):
     from backend import main as main_module
 
     async def fake_approve(proposal_id):
         raise ValueError(f"存在しない提案IDです: {proposal_id}")
 
-    monkeypatch.setattr(main_module, "approve_road_slant_envelope_mesh", fake_approve)
+    monkeypatch.setattr(main_module, "approve_envelope_mesh", fake_approve)
 
-    response = api_client.post("/engine/road_slant_envelope/approve", json={"proposal_id": 99999})
+    response = api_client.post("/engine/height_restrictions/approve", json={"proposal_id": 99999})
 
     assert response.status_code == 400
+
+
+def test_engine_adjacent_boundary_slant_envelope_endpoint(api_client, test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    response = api_client.get("/engine/adjacent_boundary_slant_envelope")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["resolved"] is True
+    assert body[0]["gradient"] == 1.25
+    assert body[0]["rise_height_m"] == 20.0
+
+
+def test_engine_adjacent_boundary_slant_envelope_propose_endpoint(api_client, test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    response = api_client.post("/engine/adjacent_boundary_slant_envelope/propose")
+
+    assert response.status_code == 200
+    assert len(response.json()["proposals"]) == 1
+
+
+def test_engine_north_slant_envelope_endpoint_with_explicit_north_degrees(api_client, test_db, monkeypatch):
+    monkeypatch.setenv("KITAGAWA_SHASEN_KUBUN", "low_rise")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    response = api_client.get("/engine/north_slant_envelope?north_degrees=0")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["resolved"] is True
+    assert body[0]["rise_height_m"] == 5.0
+
+
+def test_engine_north_slant_envelope_propose_endpoint_with_explicit_north_degrees(api_client, test_db, monkeypatch):
+    monkeypatch.setenv("KITAGAWA_SHASEN_KUBUN", "mid_rise")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    response = api_client.post("/engine/north_slant_envelope/propose?north_degrees=0")
+
+    assert response.status_code == 200
+    assert len(response.json()["proposals"]) == 1
 
 
 def test_engine_analysis_snapshot_endpoint(api_client, test_db):

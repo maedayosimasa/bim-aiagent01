@@ -30,9 +30,13 @@ from .engine.accessibility import analyze_accessibility
 from .engine.equipment import find_room_equipment
 from .engine.window_classifier import classify_windows
 from .engine.road_slant_envelope import calculate_road_slant_envelope
+from .engine.adjacent_boundary_slant_envelope import calculate_adjacent_boundary_slant_envelope
+from .engine.north_slant_envelope import calculate_north_slant_envelope
 from .engine.height_restriction_write import (
     propose_road_slant_envelope_mesh,
-    approve_road_slant_envelope_mesh,
+    propose_adjacent_boundary_slant_envelope_mesh,
+    propose_north_slant_envelope_mesh,
+    approve_envelope_mesh,
 )
 from .database.db import create_tables
 from .database.db import insert_element
@@ -184,7 +188,7 @@ class DeleteArchicadElementsRequest(BaseModel):
     guids: list[str]
 
 
-class ApproveRoadSlantEnvelopeRequest(BaseModel):
+class ApproveHeightRestrictionEnvelopeRequest(BaseModel):
     proposal_id: int
 
 
@@ -450,13 +454,17 @@ def engine_windows():
 
 
 # ==============================
-# 道路斜線制限 envelope の可視化(2026-08-13追加)
-# 建築基準法56条1項1号の道路斜線制限を幾何的に近似し(engine/
-# road_slant_envelope.py)、承認制でArchicad本体へMeshとして書き込む
-# (engine/height_restriction_write.py)。書き込みは「計算(read-only)→
-# 提案(監査ログへproposedとして記録、Archicadへは未書き込み)→承認
-# (実際にArchicadへ書き込み)」の3段階で、承認は人間がfrontendから明示的に
-# 行う(AIエージェントには公開していない)。
+# 高さ制限 envelope の可視化(2026-08-13追加、道路斜線→隣地斜線・北側斜線の順で実装)
+# 建築基準法56条1項の道路斜線制限(1号)・隣地斜線制限(2号)・北側斜線制限
+# (3号)を幾何的に近似し(それぞれengine/road_slant_envelope.py、engine/
+# adjacent_boundary_slant_envelope.py、engine/north_slant_envelope.py)、
+# 承認制でArchicad本体へMeshとして書き込む(engine/height_restriction_
+# write.py)。書き込みは「計算(read-only)→提案(監査ログへproposedとして
+# 記録、Archicadへは未書き込み)→承認(実際にArchicadへ書き込み)」の3段階で、
+# 承認は人間がfrontendから明示的に行う(AIエージェントには公開していない)。
+# 承認エンドポイント(/engine/height_restrictions/approve)はenvelopeの種類を
+# 判別しないため3種で共通(engine/height_restriction_write.pyのapprove_
+# envelope_mesh()参照)。
 # ==============================
 
 @app.get("/engine/road_slant_envelope")
@@ -473,7 +481,8 @@ def engine_road_slant_envelope(land_use_category: str | None = None):
 def engine_road_slant_envelope_propose(land_use_category: str | None = None):
     # envelopeを計算し、write_audit_logへstatus="proposed"として記録する
     # (Archicadへはまだ一切書き込まない)。返却されるproposal_idを
-    # /approveへ渡すことで初めて実際の書き込みが行われる。
+    # /engine/height_restrictions/approveへ渡すことで初めて実際の書き込みが
+    # 行われる。
 
     try:
         return propose_road_slant_envelope_mesh(land_use_category)
@@ -481,16 +490,72 @@ def engine_road_slant_envelope_propose(land_use_category: str | None = None):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@app.post("/engine/road_slant_envelope/approve")
-async def engine_road_slant_envelope_approve(data: ApproveRoadSlantEnvelopeRequest):
-    # 指定proposal_idの提案を承認し、実際にArchicad本体へMeshを書き込む
-    # (破壊的操作)。未承認(status="proposed")の提案のみ実行できる——
-    # 既に処理済みの提案を指定した場合や存在しないproposal_idはValueErrorに
-    # なる(engine/height_restriction_write.py参照)。
+@app.get("/engine/adjacent_boundary_slant_envelope")
+def engine_adjacent_boundary_slant_envelope(land_use_category: str | None = None):
+
+    try:
+        return calculate_adjacent_boundary_slant_envelope(land_use_category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/engine/adjacent_boundary_slant_envelope/propose")
+def engine_adjacent_boundary_slant_envelope_propose(land_use_category: str | None = None):
+
+    try:
+        return propose_adjacent_boundary_slant_envelope_mesh(land_use_category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+async def _resolve_north_degrees(north_degrees: float | None) -> float:
+    # north_degreesはSQLiteキャッシュに保存されないプロジェクト設定値
+    # (archicad_mcp/tapir.pyのget_geo_location()参照)のため、省略時は
+    # Archicadへ都度問い合わせる。クエリパラメータでの明示指定(オフライン
+    # 検証・テスト用)も許可する。
+
+    if north_degrees is not None:
+        return north_degrees
+
+    geo_location = await _run_archicad_action(get_archicad_geo_location())
+    resolved = geo_location.get("north_degrees")
+    if resolved is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Archicadから方位(north)を取得できませんでした。",
+        )
+    return resolved
+
+
+@app.get("/engine/north_slant_envelope")
+async def engine_north_slant_envelope(
+    north_degrees: float | None = None, kitagawa_shasen_kubun: str | None = None
+):
+
+    resolved_north = await _resolve_north_degrees(north_degrees)
+    return calculate_north_slant_envelope(resolved_north, kitagawa_shasen_kubun)
+
+
+@app.post("/engine/north_slant_envelope/propose")
+async def engine_north_slant_envelope_propose(
+    north_degrees: float | None = None, kitagawa_shasen_kubun: str | None = None
+):
+
+    resolved_north = await _resolve_north_degrees(north_degrees)
+    return propose_north_slant_envelope_mesh(resolved_north, kitagawa_shasen_kubun)
+
+
+@app.post("/engine/height_restrictions/approve")
+async def engine_height_restrictions_approve(data: ApproveHeightRestrictionEnvelopeRequest):
+    # 指定proposal_idの提案(道路斜線/隣地斜線/北側斜線いずれでも可)を承認し、
+    # 実際にArchicad本体へMeshを書き込む(破壊的操作)。未承認
+    # (status="proposed")の提案のみ実行できる——既に処理済みの提案を指定
+    # した場合や存在しないproposal_idはValueErrorになる
+    # (engine/height_restriction_write.py参照)。
 
     try:
         return await _run_archicad_action(
-            approve_road_slant_envelope_mesh(data.proposal_id)
+            approve_envelope_mesh(data.proposal_id)
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

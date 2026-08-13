@@ -619,15 +619,17 @@ export function getTokenUsageJobs() {
 }
 
 // ==============================
-// 道路斜線制限 envelope API(2026-08-13追加)
-// 建築基準法56条1項1号の道路斜線制限を幾何的に近似し(engine/
-// road_slant_envelope.py)、承認制でArchicad本体へMeshとして書き込む
-// (engine/height_restriction_write.py)。計算(read-only)→提案(監査ログへ
-// 記録するのみ、Archicad未書き込み)→承認(実際にArchicadへ書き込み)の
-// 3段階。
+// 高さ制限 envelope API(2026-08-13追加、道路斜線→隣地斜線・北側斜線の順で実装)
+// 建築基準法56条1項の道路斜線制限(1号、engine/road_slant_envelope.py)・
+// 隣地斜線制限(2号、engine/adjacent_boundary_slant_envelope.py)・北側斜線
+// 制限(3号、engine/north_slant_envelope.py)を幾何的に近似し、承認制で
+// Archicad本体へMeshとして書き込む(engine/height_restriction_write.py)。
+// 計算(read-only)→提案(監査ログへ記録するのみ、Archicad未書き込み)→承認
+// (実際にArchicadへ書き込み)の3段階。承認エンドポイントはenvelopeの種類を
+// 判別しないため3種で共通。
 // ==============================
 
-export type RoadSlantEnvelopeVertex = {
+export type HeightRestrictionEnvelopeVertex = {
   x: number;
   y: number;
   z_m: number;
@@ -640,13 +642,33 @@ export type RoadSlantEnvelopeEntry = {
   land_use_category: string;
   gradient: number;
   applicable_distance_m: number;
-  vertices: RoadSlantEnvelopeVertex[];
+  vertices: HeightRestrictionEnvelopeVertex[];
 };
 
-export type RoadSlantEnvelopeProposal = {
+export type AdjacentBoundarySlantEnvelopeEntry = {
+  site_guid: string;
+  site_name: string;
+  resolved: boolean;
+  land_use_category: string;
+  gradient: number;
+  rise_height_m: number;
+  vertices: HeightRestrictionEnvelopeVertex[];
+};
+
+export type NorthSlantEnvelopeEntry = {
+  site_guid: string;
+  site_name: string;
+  resolved: boolean;
+  kitagawa_shasen_kubun: string | null;
+  gradient: number;
+  rise_height_m: number | null;
+  vertices: HeightRestrictionEnvelopeVertex[];
+};
+
+export type HeightRestrictionEnvelopeProposal<T> = {
   proposal_id: number;
   summary: string;
-  envelope: RoadSlantEnvelopeEntry;
+  envelope: T;
 };
 
 export type WriteAuditLogEntry = {
@@ -668,14 +690,49 @@ export function getRoadSlantEnvelope(landUseCategory?: string) {
 
 export function proposeRoadSlantEnvelope(landUseCategory?: string) {
   const query = landUseCategory ? `?land_use_category=${encodeURIComponent(landUseCategory)}` : "";
-  return post<{ proposals: RoadSlantEnvelopeProposal[]; envelopes: RoadSlantEnvelopeEntry[] }>(
-    `/engine/road_slant_envelope/propose${query}`
+  return post<{
+    proposals: HeightRestrictionEnvelopeProposal<RoadSlantEnvelopeEntry>[];
+    envelopes: RoadSlantEnvelopeEntry[];
+  }>(`/engine/road_slant_envelope/propose${query}`);
+}
+
+export function getAdjacentBoundarySlantEnvelope(landUseCategory?: string) {
+  const query = landUseCategory ? `?land_use_category=${encodeURIComponent(landUseCategory)}` : "";
+  return get<AdjacentBoundarySlantEnvelopeEntry[]>(`/engine/adjacent_boundary_slant_envelope${query}`);
+}
+
+export function proposeAdjacentBoundarySlantEnvelope(landUseCategory?: string) {
+  const query = landUseCategory ? `?land_use_category=${encodeURIComponent(landUseCategory)}` : "";
+  return post<{
+    proposals: HeightRestrictionEnvelopeProposal<AdjacentBoundarySlantEnvelopeEntry>[];
+    envelopes: AdjacentBoundarySlantEnvelopeEntry[];
+  }>(`/engine/adjacent_boundary_slant_envelope/propose${query}`);
+}
+
+function _northSlantQuery(kitagawaShasenKubun?: string, northDegrees?: number): string {
+  const params = new URLSearchParams();
+  if (kitagawaShasenKubun) params.set("kitagawa_shasen_kubun", kitagawaShasenKubun);
+  if (northDegrees !== undefined) params.set("north_degrees", String(northDegrees));
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export function getNorthSlantEnvelope(kitagawaShasenKubun?: string, northDegrees?: number) {
+  return get<NorthSlantEnvelopeEntry[]>(
+    `/engine/north_slant_envelope${_northSlantQuery(kitagawaShasenKubun, northDegrees)}`
   );
 }
 
-export function approveRoadSlantEnvelope(proposalId: number) {
+export function proposeNorthSlantEnvelope(kitagawaShasenKubun?: string, northDegrees?: number) {
+  return post<{
+    proposals: HeightRestrictionEnvelopeProposal<NorthSlantEnvelopeEntry>[];
+    envelopes: NorthSlantEnvelopeEntry[];
+  }>(`/engine/north_slant_envelope/propose${_northSlantQuery(kitagawaShasenKubun, northDegrees)}`);
+}
+
+export function approveHeightRestrictionEnvelope(proposalId: number) {
   return post<{ proposal_id: number; result_guid: string | null; raw_result: unknown }>(
-    "/engine/road_slant_envelope/approve",
+    "/engine/height_restrictions/approve",
     { proposal_id: proposalId }
   );
 }

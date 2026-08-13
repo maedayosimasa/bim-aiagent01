@@ -123,3 +123,86 @@ def test_approve_marks_failed_and_reraises_on_error(test_db, monkeypatch):
     entry = db_module.get_audit_log_entry(proposal["proposal_id"])
     assert entry["status"] == "failed"
     assert "connection lost" in entry["error_message"]
+
+
+def test_approve_road_slant_envelope_mesh_is_alias_for_approve_envelope_mesh():
+    assert (
+        height_restriction_write.approve_road_slant_envelope_mesh
+        is height_restriction_write.approve_envelope_mesh
+    )
+
+
+def test_propose_adjacent_boundary_slant_envelope_mesh_creates_proposed_entry(test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    # 前面道路が無い(隣地斜線制限の計算には道路データは必須ではない)。
+
+    result = height_restriction_write.propose_adjacent_boundary_slant_envelope_mesh()
+
+    assert len(result["proposals"]) == 1
+    entry = db_module.get_audit_log_entry(result["proposals"][0]["proposal_id"])
+    assert entry["status"] == "proposed"
+    assert entry["action"] == height_restriction_write.ACTION_ADJACENT_BOUNDARY_SLANT_ENVELOPE_MESH
+
+
+def test_propose_north_slant_envelope_mesh_creates_proposed_entry(test_db, monkeypatch):
+    monkeypatch.setenv("KITAGAWA_SHASEN_KUBUN", "low_rise")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = height_restriction_write.propose_north_slant_envelope_mesh(north_degrees=0)
+
+    assert len(result["proposals"]) == 1
+    entry = db_module.get_audit_log_entry(result["proposals"][0]["proposal_id"])
+    assert entry["status"] == "proposed"
+    assert entry["action"] == height_restriction_write.ACTION_NORTH_SLANT_ENVELOPE_MESH
+
+
+def test_propose_north_slant_envelope_mesh_no_proposal_when_not_applicable(test_db, monkeypatch):
+    monkeypatch.setenv("KITAGAWA_SHASEN_KUBUN", "not_applicable")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = height_restriction_write.propose_north_slant_envelope_mesh(north_degrees=0)
+
+    assert result["proposals"] == []
+
+
+def test_approve_envelope_mesh_works_for_adjacent_and_north_proposals(test_db, monkeypatch):
+    # approve_envelope_mesh()はenvelopeの種類を判別しないため、道路斜線以外の
+    # 提案(隣地斜線・北側斜線)も同じ関数で承認できることを確認する。
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    monkeypatch.setenv("KITAGAWA_SHASEN_KUBUN", "low_rise")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    async def fake_create_mesh(*args, **kwargs):
+        return {"elements": [{"elementId": {"guid": "guid-new-mesh"}}]}
+
+    monkeypatch.setattr(height_restriction_write.tapir, "create_mesh", fake_create_mesh)
+
+    adjacent_proposal = height_restriction_write.propose_adjacent_boundary_slant_envelope_mesh()["proposals"][0]
+    north_proposal = height_restriction_write.propose_north_slant_envelope_mesh(north_degrees=0)["proposals"][0]
+
+    adjacent_result = asyncio.run(
+        height_restriction_write.approve_envelope_mesh(adjacent_proposal["proposal_id"])
+    )
+    north_result = asyncio.run(
+        height_restriction_write.approve_envelope_mesh(north_proposal["proposal_id"])
+    )
+
+    assert adjacent_result["result_guid"] == "guid-new-mesh"
+    assert north_result["result_guid"] == "guid-new-mesh"
