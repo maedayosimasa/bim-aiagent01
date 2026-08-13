@@ -54,6 +54,13 @@ D(水平距離)・H(垂直距離)は以下のように幾何的に求める:
 結果(既に大分類ゾーン除外済み)に絞り込むことで解消し、未解決16室まで
 改善した。
 
+**(2026-08-13検討・見送り)建築基準法第28条の採光義務は「居室」(第2条4号)が
+対象であり、廊下・便所・PS・EV等はそもそも対象外のため、Zone名から居室
+該当性を推定して除外する`room_classifier.py`を一度実装したが、「名前ベースの
+推定であり確定的な法的判断ではない」ことがそのまま誤判断を招く原因になる
+というユーザー判断により削除した。居室以外(廊下・便所・PS・EV等)も
+含めた全Room/Zoneがそのままチェック対象になる状態に戻している。**
+
 この計算結果は、上記の前提が成立する場合の参考値であり、確定的な法適合
 判定ではない。
 """
@@ -283,9 +290,20 @@ def calculate_effective_daylighting(land_use_category: str | None = None) -> dic
     ]
 
     room_results = []
+    excluded_site_or_road_count = 0
 
     for room in rooms:
         data = graph.nodes[room]
+
+        # 敷地境界線・前面道路のZoneは部屋ではない(上記room_polygonsの
+        # 絞り込みと同じ理由)。find_rooms()自体はこれらを除外しないため、
+        # ここで明示的に除外しないと「部屋」として採光チェック対象に
+        # 紛れ込んでしまう(テストで発覚。room_polygonsは既に除外していたが、
+        # room_resultsを作るこのループには適用されていなかった)。
+        if room in non_room_guids:
+            excluded_site_or_road_count += 1
+            continue
+
         floor_area_m2 = _room_area_m2(data)
 
         effective_area_m2 = 0.0
@@ -378,5 +396,6 @@ def calculate_effective_daylighting(land_use_category: str | None = None) -> dic
             "用途地域と異なる場合は結果が変わります。法的な適合を保証するもの"
             "ではありません。"
         ),
+        "excluded_site_or_road_count": excluded_site_or_road_count,
         "rooms": room_results,
     }

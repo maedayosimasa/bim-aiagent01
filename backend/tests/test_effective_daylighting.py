@@ -100,6 +100,18 @@ def test_calculate_effective_daylighting_resolves_d_and_h(test_db):
     assert room["ratio"] < 1 / 7
 
 
+def test_calculate_effective_daylighting_excludes_site_and_road_zones(test_db):
+    # 敷地境界線・前面道路のZoneが「部屋」として採光チェック対象に紛れ込む
+    # 不具合の回帰テスト(room_polygons(開口部の外側方向判定)は元々除外して
+    # いたが、room_resultsを作るループには適用されていなかった)。
+    _insert_room_with_south_window(test_db)
+
+    result = calculate_effective_daylighting(land_use_category="residential")
+
+    assert [r["room_guid"] for r in result["rooms"]] == ["room1"]
+    assert result["excluded_site_or_road_count"] == 1
+
+
 def test_calculate_effective_daylighting_no_overhang_is_most_favorable(test_db):
     # 直上に屋根/スラブが無い(屋上に面する窓等)場合は、障害物が無い
     # 最も有利なケースとして係数の上限3.0を採用する。
