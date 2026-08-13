@@ -16,18 +16,23 @@ import os
 import anthropic
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.types import Command
 
 from ..database import db
 from .graph import build_agent
 from .message_utils import message_text as _message_text
 from .pricing import calc_cost_usd
 from .report_graph import build_report_graph
+from .router import route_tools
+from .tools import AGENT_TOOLS
 
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_AGENT_MODEL", "claude-opus-5")
 
 _checkpointer: BaseCheckpointSaver | None = None
-_agent = None
+_agent = None  # 全ツールセット(agent/router.pyが判定に迷った場合とresume_chatが使う)
+_routed_agents: dict[tuple[str, ...], object] = {}  # ツール名の組->絞り込み済みエージェント
 _report_graph = None
+_FULL_TOOL_NAMES = tuple(sorted(t.name for t in AGENT_TOOLS))
 
 
 class AgentNotConfiguredError(RuntimeError):
@@ -68,15 +73,17 @@ async def _ainvoke_with_context_guard(runnable, payload, config=None):
 
 
 def set_checkpointer(checkpointer: BaseCheckpointSaver | None) -> None:
-    global _checkpointer, _agent
+    global _checkpointer, _agent, _routed_agents
     _checkpointer = checkpointer
     _agent = None  # 次回呼び出し時に新しいcheckpointerで再構築させる
+    _routed_agents = {}
 
 
 def reset() -> None:
     """テスト用: 構築済みのエージェント/レポートグラフのキャッシュを破棄する。"""
-    global _agent, _report_graph
+    global _agent, _routed_agents, _report_graph
     _agent = None
+    _routed_agents = {}
     _report_graph = None
 
 
@@ -97,6 +104,26 @@ def _get_agent():
     if _agent is None:
         _agent = build_agent(checkpointer=_checkpointer, model_name=DEFAULT_MODEL)
     return _agent
+
+
+def _get_routed_agent(tools: list):
+    """agent/router.pyが絞り込んだツール集合に対応するエージェントを返す
+    (ツール名の組み合わせごとにキャッシュする)。全ツールセットと一致する
+    場合は_get_agent()のシングルトンをそのまま再利用する(resume_chat()と
+    同じインスタンスを共有し、無駄な二重構築を避ける)。
+    """
+    global _routed_agents
+    key = tuple(sorted(t.name for t in tools))
+    if key == _FULL_TOOL_NAMES:
+        return _get_agent()
+
+    if not is_configured():
+        raise AgentNotConfiguredError(
+            "ANTHROPIC_API_KEY が未設定です。バックエンドの環境変数に設定してください。"
+        )
+    if key not in _routed_agents:
+        _routed_agents[key] = build_agent(checkpointer=_checkpointer, model_name=DEFAULT_MODEL, tools=tools)
+    return _routed_agents[key]
 
 
 def _get_report_graph():
@@ -171,15 +198,26 @@ def _record_token_usage(kind: str, session_id: str | None, usage: dict) -> None:
     db.insert_token_usage(kind, session_id, DEFAULT_MODEL, input_tokens, output_tokens, cost_usd)
 
 
-async def run_chat(session_id: str, message: str) -> dict:
-    agent = _get_agent()
-    config = {"configurable": {"thread_id": session_id}}
+def _interrupted_response(session_id: str, result: dict) -> dict:
+    # (2026-08-13追加、Missing Input Interrupt/Resumeパターン)
+    # engine_legal_rules_evaluate_tool(agent/tools.py)がLangGraphの
+    # interrupt()でグラフを一時停止した場合、ainvoke()の戻り値には通常の
+    # "messages"の代わりに"__interrupt__"(Interruptオブジェクトのリスト)が
+    # 含まれる。このセッションのグラフ状態はcheckpointerに永続化されており、
+    # resume_chat()で(backend再起動を挟んでも)再開できる。
+    payload = result["__interrupt__"][0].value
+    return {
+        "session_id": session_id,
+        "response": payload.get("message", "追加の法規条件の設定が必要です。"),
+        "tool_calls": [],
+        "interrupted": True,
+        "interrupt": payload,
+    }
 
-    result = await _ainvoke_with_context_guard(
-        agent,
-        {"messages": [HumanMessage(content=message)]},
-        config=config,
-    )
+
+async def _finish_turn(session_id: str, result: dict) -> dict:
+    if result.get("__interrupt__"):
+        return _interrupted_response(session_id, result)
 
     response_text, tool_calls, usage = _extract_turn(result["messages"])
     _record_token_usage("chat", session_id, usage)
@@ -188,7 +226,46 @@ async def run_chat(session_id: str, message: str) -> dict:
         "session_id": session_id,
         "response": response_text,
         "tool_calls": tool_calls,
+        "interrupted": False,
+        "interrupt": None,
     }
+
+
+async def run_chat(session_id: str, message: str) -> dict:
+    # (2026-08-13追加、Router)発話のキーワードから関連しそうなツール集合を
+    # 絞り込む(agent/router.py)。判定に迷う場合は全ツールにフォールバック
+    # するため、応答できる範囲が狭まることはない(絞り込みはあくまで
+    # プロンプト中のツール一覧を小さくするための最適化)。
+    tools = route_tools(message)
+    agent = _get_routed_agent(tools)
+    config = {"configurable": {"thread_id": session_id}}
+
+    result = await _ainvoke_with_context_guard(
+        agent,
+        {"messages": [HumanMessage(content=message)]},
+        config=config,
+    )
+
+    return await _finish_turn(session_id, result)
+
+
+async def resume_chat(session_id: str) -> dict:
+    """一時停止中の会話(missing_inputsによるinterrupt)を再開する。
+
+    実際に不足していた値(用途地域等)はbackendの環境変数からのみ解決される
+    (legal_inputs.py参照、このエージェントには書き換え権限が無い)ため、
+    resumeする値そのものに意味は無く「ユーザーが値を設定しbackendを再起動
+    した上で再開を指示した」という合図でしかない。値がまだ不足していれば
+    engine_legal_rules_evaluate_toolが再度interrupt()するため、再び
+    interrupted=Trueが返る(無限リトライではなく、その都度ユーザーへ
+    フィードバックする)。
+    """
+    agent = _get_agent()
+    config = {"configurable": {"thread_id": session_id}}
+
+    result = await _ainvoke_with_context_guard(agent, Command(resume=True), config=config)
+
+    return await _finish_turn(session_id, result)
 
 
 async def get_history(session_id: str) -> list[dict]:

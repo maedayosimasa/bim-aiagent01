@@ -47,6 +47,9 @@ def test_classify_windows_distinguishes_exterior_interior_unknown(test_db):
 
     assert by_guid["window_ext"]["classification"] == "exterior"
     assert [r["guid"] for r in by_guid["window_ext"]["adjacent_rooms"]] == ["room1"]
+    # (2026-08-13追加)Evidence Layer: 命名/トポロジーからのヒューリスティック
+    # 判定にはheuristicタグが付く(engine/evidence.py)。
+    assert by_guid["window_ext"]["evidence_confidence"] == "heuristic"
 
     assert by_guid["window_int"]["classification"] == "interior"
     assert {r["guid"] for r in by_guid["window_int"]["adjacent_rooms"]} == {"room1", "room2"}

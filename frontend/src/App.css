@@ -520,6 +520,21 @@ select:focus {
   color: var(--accent);
 }
 
+.agent-interrupt {
+  max-width: 90%;
+  border-color: #c0392b;
+  background: var(--bg);
+}
+
+.agent-interrupt ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.agent-interrupt .hint {
+  margin-bottom: 8px;
+}
+
 .agent-input-row {
   display: flex;
   gap: 8px;

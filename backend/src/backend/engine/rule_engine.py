@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from ..legal_mcp import client as legal_client
 from .code_engine import check_accessible_door_width, check_daylighting
 from .effective_daylighting import calculate_effective_daylighting
+from .evidence import EvidenceConfidence, tag as tag_evidence
 from .legal_inputs import get_legal_input_definition, resolve_legal_input
 
 _RULES_PATH = Path(__file__).parent / "legal_rules.json"
@@ -228,19 +229,24 @@ async def evaluate_legal_rule(rule: LegalRule) -> dict:
         raise ValueError(f"未登録のcheckです: {rule.check}(RULE_CHECK_REGISTRYに未登録)")
 
     measurements = compute()
-    legal_sources = await _legal_sources_for_concept(rule.concept_id)
+    legal_sources = tag_evidence(
+        await _legal_sources_for_concept(rule.concept_id), EvidenceConfidence.CANDIDATE
+    )
 
-    items = [
-        {
-            "target_guid": m["target_guid"],
-            "target_name": m.get("target_name"),
-            "status": _status_for(m["measured_value"], rule.verification).value,
-            "measured_value": m["measured_value"],
-            "unit": rule.verification.unit,
-            "evidence": m.get("evidence", {}),
-        }
-        for m in measurements
-    ]
+    items = tag_evidence(
+        [
+            {
+                "target_guid": m["target_guid"],
+                "target_name": m.get("target_name"),
+                "status": _status_for(m["measured_value"], rule.verification).value,
+                "measured_value": m["measured_value"],
+                "unit": rule.verification.unit,
+                "evidence": m.get("evidence", {}),
+            }
+            for m in measurements
+        ],
+        EvidenceConfidence.DETERMINISTIC,
+    )
 
     return {**base_result, "legal_sources": legal_sources, "items": items, "missing_inputs": []}
 

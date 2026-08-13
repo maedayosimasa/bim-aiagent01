@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getAgentHistory,
   getAgentStatus,
+  resumeAgentChat,
   sendAgentMessage,
   type AgentHistoryMessage,
+  type AgentInterrupt,
 } from "../api/client";
 
 // backend/src/backend/agent/(LangGraph)のsession_id = LangGraphのthread_id。
@@ -60,6 +62,10 @@ function AgentChatTab() {
   // 送信直後、履歴の再取得が完了するまでの間だけユーザー発話を楽観的に表示する。
   const [pendingHuman, setPendingHuman] = useState<string | null>(null);
   const elapsedSeconds = useElapsedSeconds(pendingHuman !== null);
+  // (2026-08-13追加)engine_legal_rules_evaluate_toolがLangGraphのinterrupt()
+  // で会話を一時停止した状態。停止中はhistoryに現れない(判定に必要な最終
+  // AIMessageがまだ生成されていない)ため、別途保持して表示する。
+  const [interruptState, setInterruptState] = useState<AgentInterrupt | null>(null);
 
   const statusQuery = useQuery({ queryKey: ["agent-status"], queryFn: getAgentStatus });
 
@@ -70,16 +76,25 @@ function AgentChatTab() {
 
   const chatMutation = useMutation({
     mutationFn: (message: string) => sendAgentMessage(sessionId, message),
-    onSuccess: async () => {
+    onSuccess: async (data) => {
       await queryClient.invalidateQueries({ queryKey: ["agent-history", sessionId] });
       setPendingHuman(null);
+      setInterruptState(data.interrupted ? data.interrupt : null);
     },
     onError: () => setPendingHuman(null),
   });
 
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeAgentChat(sessionId),
+    onSuccess: async (data) => {
+      await queryClient.invalidateQueries({ queryKey: ["agent-history", sessionId] });
+      setInterruptState(data.interrupted ? data.interrupt : null);
+    },
+  });
+
   const sendMessage = () => {
     const message = draft.trim();
-    if (!message || pendingHuman !== null) return;
+    if (!message || pendingHuman !== null || interruptState !== null) return;
     setDraft("");
     setPendingHuman(message);
     chatMutation.mutate(message);
@@ -91,10 +106,11 @@ function AgentChatTab() {
     setSessionId(created);
     setDraft("");
     setPendingHuman(null);
+    setInterruptState(null);
   };
 
   const configured = statusQuery.data?.configured ?? true; // 状態取得前は未知のためボタンを塞がない
-  const inputDisabled = pendingHuman !== null || !configured;
+  const inputDisabled = pendingHuman !== null || !configured || interruptState !== null;
   const messages: AgentHistoryMessage[] = historyQuery.data?.messages ?? [];
 
   return (
@@ -149,9 +165,29 @@ function AgentChatTab() {
             </div>
           </>
         )}
+        {interruptState !== null && (
+          <div className="agent-message agent-message-ai agent-interrupt">
+            <p>{interruptState.message}</p>
+            <ul>
+              {interruptState.missing_inputs.map((input) => (
+                <li key={input.key}>
+                  <strong>{input.label}</strong>({input.key}): {input.description}
+                </li>
+              ))}
+            </ul>
+            <p className="hint">
+              backendの環境変数に上記の値を設定しbackendを再起動した後、
+              「再開」を押してください。
+            </p>
+            <button onClick={() => resumeMutation.mutate()} disabled={resumeMutation.isPending}>
+              {resumeMutation.isPending ? "再開中..." : "再開"}
+            </button>
+          </div>
+        )}
       </div>
 
       {chatMutation.isError && <p className="error">{String(chatMutation.error)}</p>}
+      {resumeMutation.isError && <p className="error">{String(resumeMutation.error)}</p>}
 
       <div className="agent-input-row">
         <textarea

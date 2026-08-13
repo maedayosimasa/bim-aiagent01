@@ -41,24 +41,30 @@ SYSTEM_PROMPT = """\
   engine_windows_toolを使ってください(隣接する部屋数から外部窓/内部窓を
   判定済みの結果を返します)。Archicadの窓要素自体には外部/内部を示す
   属性が無いため、この判定はあくまで参考値である旨を回答に明記してください。
-- engine_legal_rules_evaluate_toolの結果に"missing_inputs"が含まれる場合、
-  そのルールはBIMデータだけでは判定できず、用途地域・防火地域・道路条件
-  などプロジェクト単位の外部情報(法規条件)が不足しています。「判定できま
-  せん」で終わらせず、missing_inputsの各項目(label/description)を具体的に
-  提示してユーザーに尋ねてください。回答を得たら、「backendの環境変数
-  <keyを大文字化したもの>に設定し、backendを再起動してください」と案内し
-  (このエージェントには設定を書き換える権限がありません)、設定後に改めて
-  同じツールを呼び直して判定を続けてください。engine_legal_inputs_toolで
-  既知の法規条件の一覧・現在の設定状況を確認できます。
+- engine_legal_rules_evaluate_toolは、判定に必要な外部の法規条件(用途地域等)
+  が不足している場合、会話をその場で一時停止します(呼び出し元がユーザーに
+  確認し、値の設定・backend再起動後に再開します)。あなたがこの状況で
+  文章を組み立てる必要はありません。ユーザーから「どの法規条件が必要か」
+  と直接聞かれた場合はengine_legal_inputs_toolで一覧・現在の設定状況を
+  確認して答えてください。
 """
 
 
-def build_agent(checkpointer: BaseCheckpointSaver | None = None, model_name: str = "claude-opus-5"):
+def build_agent(
+    checkpointer: BaseCheckpointSaver | None = None,
+    model_name: str = "claude-opus-5",
+    tools: list = AGENT_TOOLS,
+):
+    # toolsは既定で全ツール(AGENT_TOOLS)だが、agent/router.pyのRouterが
+    # ユーザー発話から絞り込んだ部分集合を渡すこともある(agent/service.pyの
+    # _get_routed_agent()参照)。system_promptは絞り込みの有無に関わらず
+    # 同じものを使う(存在しないツールへの言及があっても実害は無く、
+    # ドメインごとに文面を分ける複雑さに見合う効果は無いと判断した)。
     model = ChatAnthropic(model=model_name)
 
     return create_agent(
         model,
-        tools=AGENT_TOOLS,
+        tools=tools,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
     )

@@ -188,6 +188,10 @@ class AgentChatRequest(BaseModel):
     message: str
 
 
+class AgentResumeRequest(BaseModel):
+    session_id: str
+
+
 
 # ==============================
 # Root API
@@ -759,6 +763,24 @@ async def agent_chat(data: AgentChatRequest):
         # 超える巨大なツール結果が書き込まれた等)、以後このセッションでは
         # 二度と成功しない。413(Payload Too Large)でフロントエンドに区別
         # させ、新しいセッションを開始するよう案内する。
+        raise HTTPException(status_code=413, detail=str(exc))
+    except anthropic.APIError as exc:
+        raise HTTPException(status_code=502, detail=f"Claude APIの呼び出しに失敗しました: {exc}")
+
+
+@app.post("/agent/chat/resume")
+async def agent_chat_resume(data: AgentResumeRequest):
+    # (2026-08-13追加、Missing Input Interrupt/Resumeパターン)engine_legal_
+    # rules_evaluate_tool(agent/tools.py)が法規条件不足でLangGraphの
+    # interrupt()により一時停止した会話を再開する。レスポンスの"interrupted"
+    # がtrueの間は/agent/chatではなくこちらを呼ぶ(値がまだ不足していれば
+    # 再びinterrupted=trueが返る)。
+
+    try:
+        return await agent_service.resume_chat(data.session_id)
+    except agent_service.AgentNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except agent_service.ConversationTooLongError as exc:
         raise HTTPException(status_code=413, detail=str(exc))
     except anthropic.APIError as exc:
         raise HTTPException(status_code=502, detail=f"Claude APIの呼び出しに失敗しました: {exc}")

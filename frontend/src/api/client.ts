@@ -467,10 +467,25 @@ export type AgentToolCallResult = {
   result: string;
 };
 
+export type AgentMissingInput = {
+  key: string;
+  label: string;
+  description: string;
+};
+
+export type AgentInterrupt = {
+  type: string;
+  rule_id: string;
+  missing_inputs: AgentMissingInput[];
+  message: string;
+};
+
 export type AgentChatResponse = {
   session_id: string;
   response: string;
   tool_calls: AgentToolCallResult[];
+  interrupted: boolean;
+  interrupt: AgentInterrupt | null;
 };
 
 export type AgentHistoryMessage =
@@ -496,6 +511,17 @@ export function sendAgentMessage(sessionId: string, message: string) {
   return post<AgentChatResponse>(
     "/agent/chat",
     { session_id: sessionId, message },
+    AGENT_TIMEOUT_MS
+  );
+}
+
+// (2026-08-13追加)engine_legal_rules_evaluate_toolが法規条件不足(missing_
+// inputs)でLangGraphのinterrupt()により会話を一時停止した場合に呼ぶ。
+// AgentChatResponse.interruptedがtrueの間は/agent/chatではなくこちらを使う。
+export function resumeAgentChat(sessionId: string) {
+  return post<AgentChatResponse>(
+    "/agent/chat/resume",
+    { session_id: sessionId },
     AGENT_TIMEOUT_MS
   );
 }

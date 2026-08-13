@@ -27,6 +27,7 @@ import json
 
 import httpx
 from langchain_core.tools import tool
+from langgraph.types import interrupt
 
 from ..archicad_mcp.server import (
     get_engine_analysis_snapshot,
@@ -259,16 +260,41 @@ async def engine_legal_rules_evaluate_tool(rule_id: str) -> str:
     関連しそうな法令根拠(legal_sources)も添付される(未接続でも判定は継続)。
     rule_idの一覧はengine_legal_rules_list_toolで取得できる。
 
-    結果に"missing_inputs"が含まれる場合、そのルールはBIMデータだけでは
-    判定できず、外部の法規条件(用途地域等)が不足している(itemsは空になる)。
-    その場合は判定を諦めず、missing_inputsの各項目(key/label/description)
-    が何かをユーザーに具体的に尋ね、回答を得てから再度このツールを呼び直す
-    こと。値の設定方法はengine_legal_inputs_toolの説明を参照。
+    判定に必要な外部の法規条件(用途地域等)が不足している場合、このツールは
+    グラフの実行を一時停止する(missing_inputsの内容を尋ねるためにLLMが自分で
+    文章を組み立てる必要はない——呼び出し元が停止を検知し、ユーザーに
+    確認した上で再開する)。値が設定され(backendの環境変数、再起動要)、
+    再開されると判定を再実行し、その結果を返す。
     """
     try:
-        return _json(await evaluate_legal_rule_by_id(rule_id))
+        result = await evaluate_legal_rule_by_id(rule_id)
     except ValueError as exc:
         return _json({"error": str(exc)})
+
+    # (2026-08-13追加、Missing Input Interrupt/Resumeパターン)値は
+    # legal_inputs.pyの制約によりbackendの環境変数からしか読めず、この
+    # エージェントには書き換え権限が無い(=「backendを再起動する」という
+    # 外部イベントを待つしかない)。会話の1ターンで完結させようとせず、
+    # LangGraphのinterrupt()でグラフ自体を一時停止する(checkpointerに
+    # 状態が永続化されるため、backend再起動を挟んでも再開できる)。
+    while result.get("missing_inputs"):
+        interrupt({
+            "type": "missing_legal_inputs",
+            "rule_id": rule_id,
+            "missing_inputs": result["missing_inputs"],
+            "message": (
+                f"「{result['title']}」の判定には、外部の法規条件"
+                f"({'、'.join(m['label'] for m in result['missing_inputs'])})"
+                "が必要ですが未設定です。値が分かればbackendの環境変数に設定し"
+                "backendを再起動した上で、再開してください。"
+            ),
+        })
+        try:
+            result = await evaluate_legal_rule_by_id(rule_id)
+        except ValueError as exc:
+            return _json({"error": str(exc)})
+
+    return _json(result)
 
 
 @tool

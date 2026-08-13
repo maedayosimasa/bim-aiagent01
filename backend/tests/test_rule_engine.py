@@ -110,6 +110,9 @@ def test_run_daylighting_check_structures_result(test_db, monkeypatch):
     assert item["target_guid"] == "room1"
     assert item["status"] == "fail"  # 2/50 < 1/7
     assert item["evidence"]["window_count"] == 1
+    # (2026-08-13追加)Evidence Layer: BIM実測値から直接算出した項目は
+    # deterministicタグが付く(engine/evidence.py)。
+    assert item["evidence_confidence"] == "deterministic"
 
 
 def test_evaluate_legal_rule_by_id_raises_for_unknown_rule():
@@ -208,3 +211,32 @@ def test_run_accessible_door_width_check_structures_result(test_db, monkeypatch)
     item = result["items"][0]
     assert item["target_guid"] == "door_wide"
     assert item["status"] == "pass"
+
+
+def test_evaluate_legal_rule_tags_legal_sources_as_candidate(test_db, monkeypatch):
+    # (2026-08-13追加)Evidence Layer: legal_sourcesは正規表現抽出によるノイズを
+    # 含む候補であり確定的な根拠ではないため、candidateタグが付く
+    # (engine/evidence.py)。BIM実測値から算出するitemsのdeterministicタグとは
+    # 明確に区別する。
+    monkeypatch.setenv("LEGAL_API_URL", "http://legal.example.invalid")
+
+    async def fake_get_rules_by_concept(concept_id):
+        return [{
+            "rule_id": "rule:1", "law_id": "325AC0000000201", "node_id": "n1",
+            "raw_sentence": "居室には採光のための開口部を設けなければならない。",
+            "modality": "obligation", "confidence": 0.5,
+        }]
+
+    monkeypatch.setattr(legal_client, "get_rules_by_concept", fake_get_rules_by_concept)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 5000], [0, 5000]]}),
+    )
+
+    result = asyncio.run(rule_engine.run_daylighting_check())
+
+    source = result["legal_sources"][0]
+    assert source["evidence_confidence"] == "candidate"
+    assert source["confidence"] == 0.5  # Legal Knowledge Builder側の抽出confidenceとは別物

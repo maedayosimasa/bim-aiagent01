@@ -146,15 +146,27 @@ def test_engine_legal_inputs_tool_lists_definitions_with_used_by(monkeypatch):
     assert by_key["land_use_category"]["used_by_rule_ids"] == ["effective_daylighting_ratio"]
 
 
-def test_engine_legal_rules_evaluate_tool_surfaces_missing_inputs(sample_elements, monkeypatch):
-    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+def test_engine_legal_rules_evaluate_tool_returns_result_when_inputs_resolved(sample_elements, monkeypatch):
+    # accessible_door_widthはrequired_inputsが無く、BIMデータのみで判定できる
+    # ため、missing_inputsのinterrupt経路には入らない(通常のツール呼び出し
+    # として単体で検証できる)。
     monkeypatch.delenv("LEGAL_API_URL", raising=False)
 
     result = json.loads(
         asyncio.run(
-            agent_tools.engine_legal_rules_evaluate_tool.ainvoke({"rule_id": "effective_daylighting_ratio"})
+            agent_tools.engine_legal_rules_evaluate_tool.ainvoke({"rule_id": "accessible_door_width"})
         )
     )
 
-    assert result["items"] == []
-    assert [m["key"] for m in result["missing_inputs"]] == ["land_use_category"]
+    assert result["missing_inputs"] == []
+    assert len(result["items"]) == 1
+
+
+# missing_inputsがあるルール(land_use_category未設定のeffective_daylighting_
+# ratio等)の経路は、2026-08-13にLangGraphのinterrupt()を使う設計に変更した
+# (Missing Input Interrupt/Resumeパターン、agent/tools.py参照)。interrupt()は
+# 実際のグラフ実行(checkpointer付き)の中でしか正しく動作しないため、この
+# ツール単体を直接ainvoke()するのではなく、agent/graph.pyのエージェント経由で
+# 検証する必要がある。回帰テストはtest_agent.pyの
+# test_run_chat_interrupts_on_missing_legal_inputs_then_resumes /
+# test_run_chat_interrupts_again_when_still_missing_after_resume を参照。

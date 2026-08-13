@@ -15,6 +15,7 @@ import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.checkpoint.memory import InMemorySaver
 
 from backend.agent import graph as agent_graph
 from backend.agent import report_graph as agent_report_graph
@@ -181,6 +182,67 @@ def test_run_chat_raises_conversation_too_long_on_prompt_too_long_error(monkeypa
         asyncio.run(agent_service.run_chat("poisoned-session", "テスト"))
 
 
+def _tool_call_response(rule_id):
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": "engine_legal_rules_evaluate_tool",
+            "args": {"rule_id": rule_id},
+            "id": "call_1", "type": "tool_call",
+        }],
+    )
+
+
+def test_run_chat_interrupts_on_missing_legal_inputs_then_resumes(monkeypatch, sample_elements):
+    # (2026-08-13追加、Missing Input Interrupt/Resumeパターン)
+    # engine_legal_rules_evaluate_toolはbackendの環境変数からしか法規条件を
+    # 読めない(legal_inputs.py)。値が未設定の間はLangGraphのinterrupt()で
+    # 会話を一時停止し、値を設定→backend再起動を経て初めて再開できることを
+    # 確認する回帰テスト。永続化(checkpointer)が無いと再開自体が成立しない
+    # ため、テスト用にInMemorySaverを明示的に設定する。
+    agent_service.set_checkpointer(InMemorySaver())
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+    _install_fake_model(monkeypatch, [
+        _tool_call_response("effective_daylighting_ratio"),
+        AIMessage(content="用途地域が設定されたので判定できました。"),
+    ])
+
+    result = asyncio.run(agent_service.run_chat("session-interrupt", "有効採光面積比をチェックして"))
+
+    assert result["interrupted"] is True
+    assert result["tool_calls"] == []
+    assert result["interrupt"]["rule_id"] == "effective_daylighting_ratio"
+    missing_keys = {m["key"] for m in result["interrupt"]["missing_inputs"]}
+    assert missing_keys == {"land_use_category"}
+    assert "用途地域" in result["response"]
+
+    # 実際の運用では「値を設定してbackendを再起動する」が挟まる。テストでは
+    # env varの変更で代替する(checkpointerに永続化された一時停止状態は
+    # プロセス再起動を跨いでも残る設計だが、ここではプロセス内で検証する)。
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    resumed = asyncio.run(agent_service.resume_chat("session-interrupt"))
+
+    assert resumed["interrupted"] is False
+    assert resumed["interrupt"] is None
+    assert resumed["response"] == "用途地域が設定されたので判定できました。"
+
+
+def test_run_chat_interrupts_again_when_still_missing_after_resume(monkeypatch, sample_elements):
+    agent_service.set_checkpointer(InMemorySaver())
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+    _install_fake_model(monkeypatch, [_tool_call_response("effective_daylighting_ratio")])
+
+    result = asyncio.run(agent_service.run_chat("session-interrupt-2", "チェックして"))
+    assert result["interrupted"] is True
+
+    # LAND_USE_CATEGORYをまだ設定しないまま再開を指示すると、再びinterruptされる
+    # (無限リトライではなく、都度ユーザーへフィードバックする)。
+    resumed = asyncio.run(agent_service.resume_chat("session-interrupt-2"))
+
+    assert resumed["interrupted"] is True
+    assert resumed["interrupt"]["rule_id"] == "effective_daylighting_ratio"
+
+
 def _install_fake_report_model(monkeypatch, report_text):
     fake_model = _FakeToolCallingModel(responses=[AIMessage(content=report_text)])
     monkeypatch.setattr(agent_report_graph, "ChatAnthropic", lambda model: fake_model)
@@ -267,3 +329,101 @@ def test_run_legal_report_without_api_key_raises(monkeypatch):
 
     with pytest.raises(agent_service.AgentNotConfiguredError):
         asyncio.run(agent_service.run_legal_report())
+
+
+def _make_check(rule_id, title, *, pass_count=0, fail_count=0, unknown_count=0):
+    items = (
+        [{"status": "pass", "target_guid": f"p{i}", "target_name": None,
+          "measured_value": 1, "unit": None} for i in range(pass_count)]
+        + [{"status": "fail", "target_guid": f"f{i}", "target_name": None,
+            "measured_value": 1, "unit": None} for i in range(fail_count)]
+        + [{"status": "unknown", "target_guid": f"u{i}", "target_name": None,
+            "measured_value": None, "unit": None} for i in range(unknown_count)]
+    )
+    return {
+        "rule_id": rule_id,
+        "title": title,
+        "comparator": "gte",
+        "threshold": 0.1,
+        "threshold_unit": None,
+        "disclaimer": "参考値です。",
+        "legal_sources": [],
+        "items": items,
+        "missing_inputs": [],
+    }
+
+
+def _install_fake_checks(monkeypatch, checks):
+    async def _fake_evaluate(rule):
+        return next(c for c in checks if c["rule_id"] == rule["rule_id"])
+
+    monkeypatch.setattr(
+        agent_report_graph, "load_legal_rules",
+        lambda: [{"rule_id": c["rule_id"]} for c in checks],
+    )
+    monkeypatch.setattr(agent_report_graph, "evaluate_legal_rule", _fake_evaluate)
+
+
+def test_validate_report_claims_accepts_matching_counts():
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=2, fail_count=1)]
+    report_text = "■採光有効面積比\n結果: PASS 2件 / FAIL 1件 / UNKNOWN 0件"
+
+    assert agent_report_graph._validate_report_claims(checks, report_text) == []
+
+
+def test_validate_report_claims_detects_mismatch():
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=2, fail_count=1)]
+    report_text = "■採光有効面積比\n結果: PASS 1件 / FAIL 1件 / UNKNOWN 0件"
+
+    mismatches = agent_report_graph._validate_report_claims(checks, report_text)
+
+    assert len(mismatches) == 1
+    assert "採光有効面積比" in mismatches[0]
+
+
+def test_validate_report_claims_skips_unparseable_text():
+    # 想定と異なる書式で件数が抽出できない場合は「検証不能」として扱い、
+    # 不一致とはみなさない(過検出よりも見逃しを許容する設計)。
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=2, fail_count=1)]
+    report_text = "採光は概ね良好です。"
+
+    assert agent_report_graph._validate_report_claims(checks, report_text) == []
+
+
+def test_run_legal_report_retries_once_on_mismatch_then_succeeds(monkeypatch):
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=2, fail_count=1)]
+    _install_fake_checks(monkeypatch, checks)
+
+    wrong_report = "■採光有効面積比\n結果: PASS 1件 / FAIL 1件 / UNKNOWN 0件\n総評: 参考値です。"
+    correct_report = "■採光有効面積比\n結果: PASS 2件 / FAIL 1件 / UNKNOWN 0件\n総評: 参考値です。"
+    fake_model = _FakeToolCallingModel(responses=[
+        AIMessage(content=wrong_report, usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}),
+        AIMessage(content=correct_report, usage_metadata={"input_tokens": 150, "output_tokens": 30, "total_tokens": 180}),
+    ])
+    monkeypatch.setattr(agent_report_graph, "ChatAnthropic", lambda model: fake_model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    result = asyncio.run(agent_service.run_legal_report())
+
+    assert result["report"] == correct_report
+    assert fake_model.calls == 2
+    assert "自動検証の警告" not in result["report"]
+
+
+def test_run_legal_report_appends_warning_when_mismatch_persists(monkeypatch):
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=2, fail_count=1)]
+    _install_fake_checks(monkeypatch, checks)
+
+    wrong_report = "■採光有効面積比\n結果: PASS 1件 / FAIL 1件 / UNKNOWN 0件\n総評: 参考値です。"
+    fake_model = _FakeToolCallingModel(responses=[
+        AIMessage(content=wrong_report),
+        AIMessage(content=wrong_report),
+    ])
+    monkeypatch.setattr(agent_report_graph, "ChatAnthropic", lambda model: fake_model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    result = asyncio.run(agent_service.run_legal_report())
+
+    assert fake_model.calls == 2
+    assert "自動検証の警告" in result["report"]
+    assert result["report"].startswith(wrong_report)

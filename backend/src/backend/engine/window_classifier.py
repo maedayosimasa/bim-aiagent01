@@ -21,6 +21,7 @@ Room-Window関係は距離ベースの隣接判定でありDoorのownerElementId
 
 from ..graph.builder import build_graph
 from ..graph.topology import build_topology
+from .evidence import EvidenceConfidence, tag as tag_evidence
 from .relation_builder import rebuild_connections
 
 
@@ -68,6 +69,8 @@ def classify_windows():
     counts = {"exterior": 0, "interior": 0, "unknown": 0}
     for window in windows:
         counts[window["classification"]] += 1
+
+    windows = tag_evidence(windows, EvidenceConfidence.HEURISTIC)
 
     return {
         "disclaimer": (
