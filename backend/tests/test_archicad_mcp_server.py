@@ -270,6 +270,88 @@ def test_sync_from_archicad_tool_with_no_elements(test_db, monkeypatch):
     assert _payload(result) == {"synced": 0, "requested": 0}
 
 
+def test_sync_from_archicad_tool_populates_legal_conditions_for_site_zone(test_db, monkeypatch):
+    # (2026-08-14追加)敷地Zoneの「法条件」プロパティ(建蔽率・容積率・
+    # 前面道路幅)がproperties.legal_conditionsとして同期されることを確認する。
+    from mcp.server.mcpserver import MCPServer
+
+    fake_server = MCPServer(name="fake-tapir-legal-conditions")
+
+    @fake_server.tool(name="GetAllElements")
+    def get_all_elements(input) -> dict:
+        return {"elements": [{"elementId": {"guid": "site-guid"}}]}
+
+    @fake_server.tool(name="GetDetailsOfElements")
+    def get_details_of_elements(input) -> dict:
+        return {
+            "detailsOfElements": [
+                {
+                    "type": "Zone",
+                    "id": "site-guid",
+                    "floorIndex": 0,
+                    "layerIndex": 0,
+                    "drawIndex": 0,
+                    "details": {
+                        "name": "敷地",
+                        "polygonCoordinates": [
+                            {"x": 0, "y": 0}, {"x": 10, "y": 0},
+                            {"x": 10, "y": 10}, {"x": 0, "y": 10},
+                        ],
+                    },
+                },
+            ]
+        }
+
+    @fake_server.tool(name="Get3DBoundingBoxes")
+    def get_bounding_boxes(input) -> dict:
+        return {"boundingBoxes3D": [{"boundingBox3D": {
+            "xMin": 0, "yMin": 0, "zMin": 0, "xMax": 10, "yMax": 10, "zMax": 0,
+        }}]}
+
+    @fake_server.tool(name="GetAttributesByType")
+    def get_attributes_by_type(input) -> dict:
+        return {"attributes": []}
+
+    @fake_server.tool(name="GetAllProperties")
+    def get_all_properties(input) -> dict:
+        return {
+            "properties": [
+                {"propertyId": {"guid": "prop-kenpei"}, "propertyGroupName": "法条件", "propertyName": "建蔽率"},
+                {"propertyId": {"guid": "prop-yoseki"}, "propertyGroupName": "法条件", "propertyName": "容積率"},
+                {"propertyId": {"guid": "prop-douro"}, "propertyGroupName": "法条件", "propertyName": "前面道路幅"},
+                {"propertyId": {"guid": "prop-unrelated"}, "propertyGroupName": "General", "propertyName": "Name"},
+            ]
+        }
+
+    @fake_server.tool(name="GetPropertyValuesOfElements")
+    def get_property_values(input) -> dict:
+        return {
+            "propertyValuesForElements": [
+                [
+                    {"propertyValue": {"type": "string", "status": "normal", "value": "60"}},
+                    {"propertyValue": {"type": "string", "status": "normal", "value": "200"}},
+                    {"propertyValue": {"type": "string", "status": "normal", "value": "6.0"}},
+                ]
+            ]
+        }
+
+    monkeypatch.setattr(
+        archicad_client, "_default_transport", lambda: InMemoryTransport(fake_server)
+    )
+
+    result = call_mcp_tool("sync_from_archicad", {"limit": 10})
+
+    assert _payload(result) == {"synced": 1, "requested": 1}
+
+    site = db.get_element("site-guid")
+    properties = json.loads(site["properties"])
+    assert properties["legal_conditions"] == {
+        "建蔽率": "60",
+        "容積率": "200",
+        "前面道路幅": "6.0",
+    }
+
+
 def test_update_element_geometry_tool_missing_guid_is_error(test_db):
     result = call_mcp_tool(
         "update_element_geometry",

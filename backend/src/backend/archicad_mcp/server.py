@@ -3,7 +3,9 @@ import json
 from mcp.server.mcpserver import MCPServer
 
 from ..database import db
+from ..engine.legal_inputs import ARCHICAD_LEGAL_PROPERTY_KEYWORDS
 from ..engine.relation_builder import rebuild_connections
+from ..engine.site import matches_zone_keyword
 from ..engine.spatial import analyze_space
 from ..engine.vector_store import search_elements
 from ..graph.geometry import geometry_from_json
@@ -188,6 +190,13 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     読んでいなかった。Meshには(Zoneと違い)details.nameが無いため
     (archicad_mcp/tapir.pyのモジュールdocstring参照)、engine/site.pyが
     Meshを名前検索する際はこのarchicad_idを使う。
+
+    (2026-08-14追加)敷地境界線Zone(名前・archicad_id・layer_nameに"敷地"を
+    含む要素)については、GetPropertyValuesOfElementsでカスタムProperty値
+    (建蔽率・容積率・前面道路幅等、ユーザーが「分類とプロパティ」パネルの
+    「法条件」グループへ入力している)も取得し、properties.legal_conditions
+    として保存する(_sync_legal_condition_properties()参照)。engine/
+    legal_inputs.pyのresolve_legal_input()がこれを読む。
     """
     all_guids = await tapir.get_all_element_guids()
     guids = all_guids if limit <= 0 else all_guids[:limit]
@@ -208,6 +217,7 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     db.clear_elements()
 
     synced = 0
+    site_guids = []
 
     for guid, details_item, bbox_item in zip(guids, details_list, bounding_boxes):
         element_type = details_item.get("type", "Unknown")
@@ -222,11 +232,14 @@ async def sync_from_archicad(limit: int = 50) -> dict:
             category_guid = (type_details.get("categoryAttributeId") or {}).get("guid")
             zone_category = category_name_by_guid.get(category_guid)
 
+        archicad_id = details_item.get("id") or None
+        layer_name = layer_name_by_index.get(details_item.get("layerIndex"))
+
         properties = {
             "floorIndex": details_item.get("floorIndex"),
             "layerIndex": details_item.get("layerIndex"),
-            "layer_name": layer_name_by_index.get(details_item.get("layerIndex")),
-            "archicad_id": details_item.get("id") or None,
+            "layer_name": layer_name,
+            "archicad_id": archicad_id,
             "archicad_details": type_details,
             "zone_category": zone_category,
         }
@@ -236,7 +249,56 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         )
         synced += 1
 
+        if matches_zone_keyword(element_type, name, archicad_id, layer_name, "敷地"):
+            site_guids.append(guid)
+
+    await _sync_legal_condition_properties(site_guids)
+
     return {"synced": synced, "requested": len(guids)}
+
+
+async def _sync_legal_condition_properties(site_guids: list[str]) -> None:
+    """敷地ZoneのArchicadカスタムProperty(建蔽率・容積率・前面道路幅等)を
+    取得し、properties.legal_conditionsとして保存する。
+
+    (2026-08-14追加)engine/legal_inputs.pyが以前「今後の課題」としていた
+    カスタムProperty未対応のギャップに対応する——ユーザーが実際に敷地Zoneの
+    「分類とプロパティ」パネルの「法条件」グループへ建蔽率・容積率・前面
+    道路幅を入力する運用を開始したことを受けたもの。プロパティ名の完全一致は
+    要求せず、engine.legal_inputs.ARCHICAD_LEGAL_PROPERTY_KEYWORDSに列挙した
+    キーワードの部分一致で対象プロパティを探す(自治体・テンプレートによる
+    名称の揺れに強くするため)。該当するプロパティが1つも見つからない場合、
+    または敷地Zoneが1つも無い場合は何もしない(GetPropertyValuesOfElements
+    自体を呼ばない、無駄なArchicad呼び出しを避けるため)。
+    """
+    if not site_guids:
+        return
+
+    all_properties = await tapir.list_properties()
+    keywords = [kw for kws in ARCHICAD_LEGAL_PROPERTY_KEYWORDS.values() for kw in kws]
+
+    matched_properties = [
+        prop for prop in all_properties
+        if any(kw in (prop.get("propertyName") or "") for kw in keywords)
+    ]
+
+    if not matched_properties:
+        return
+
+    property_guids = [prop["propertyId"]["guid"] for prop in matched_properties]
+    property_names = [prop.get("propertyName") for prop in matched_properties]
+
+    values_by_element = await tapir.get_property_values(site_guids, property_guids)
+
+    for guid, values in zip(site_guids, values_by_element):
+        legal_conditions = {}
+        for property_name, value_item in zip(property_names, values):
+            value = (value_item.get("propertyValue") or {}).get("value")
+            if value is not None:
+                legal_conditions[property_name] = value
+
+        if legal_conditions:
+            db.update_element_properties(guid, {"legal_conditions": legal_conditions})
 
 
 @mcp_server.tool()

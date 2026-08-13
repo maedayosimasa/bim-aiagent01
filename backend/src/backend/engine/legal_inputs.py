@@ -18,19 +18,32 @@ LEGAL_INPUT_DEFINITIONSは、ユーザーが想定している法規条件の分
 という意味でのテンプレート/スキーマとして機能する(GET /engine/legal_inputs
 で一覧を確認できる)。
 
-**値の取得元(現状は環境変数のみ)**: 各入力キーは大文字化した環境変数名
-(例: land_use_category → LAND_USE_CATEGORY)から読む。ユーザーはArchicad
-のカスタムProperty(「法規条件」のようなプロパティグループとしてテンプレート
-化したいと考えている)から直接読み込みたいと考えているが、現状の
-sync_from_archicad()は組み込みのGetDetailsOfElements情報のみを同期し、
-カスタムProperty値(GetPropertyValuesOfElements)は含まないため、この経路は
-未実装(既知の今後の課題としてここに明記する。実装する場合、プロジェクト
-単位の値をどの要素に持たせるか——敷地境界線Zoneのプロパティとして持たせる
-案が有力——という設計判断が別途必要になる)。
+**値の取得元**: (1)敷地境界線ZoneのArchicadカスタムProperty、(2)環境変数
+(大文字化したキー名、例: land_use_category → LAND_USE_CATEGORY)の順で
+解決する。
+
+(2026-08-14追加)ユーザーが実際に敷地Zoneの「分類とプロパティ」パネルの
+「法条件」プロパティグループへ建蔽率・容積率・前面道路幅を入力する運用を
+開始したことを受け、`archicad_mcp/server.py`の`sync_from_archicad()`を
+拡張し、敷地境界線Zone(名前・archicad_id・layer_nameに"敷地"を含む要素、
+engine/site.pyと同じキーワード判定)についてGetPropertyValuesOfElementsで
+プロパティ値を取得、`properties.legal_conditions`(プロパティ名→値の辞書)
+としてSQLiteキャッシュへ保存するようにした。これによりCLAUDE.md・本
+モジュールが以前「今後の課題」としていたカスタムProperty未対応のギャップに
+対応した。`ARCHICAD_LEGAL_PROPERTY_KEYWORDS`(下記)にkeyごとの照合キーワード
+を列挙しており、プロパティ名の完全一致は要求しない(自治体・テンプレートに
+よる名称の揺れに強くするため、engine/site.pyの`find_zones_by_name()`と同じ
+部分一致の考え方)。現状は`kenpei_ritsu`/`yoseki_ritsu`/`douro_haba`の3件
+のみ対応(ユーザーが実際に運用しているのはこの3項目のため)。複数の敷地
+Zoneが見つかった場合、最初に一致した値を採用する(floor_area_ratio/
+building_coverage_ratioの「敷地」名前一致のあいまいさと同じ既知の限界)。
 """
 
+import json
 import os
 from dataclasses import dataclass
+
+from ..database.db import get_elements
 
 
 @dataclass(frozen=True)
@@ -198,15 +211,74 @@ LEGAL_INPUT_DEFINITIONS: dict[str, LegalInputDefinition] = {
 }
 
 
-def resolve_legal_input(key: str) -> str | None:
-    """指定キーの法規条件の値を解決する(現状は環境変数のみ)。
+# key→敷地ZoneのArchicadカスタムProperty名を照合するキーワード一覧
+# (部分一致、モジュールdocstring参照)。archicad_mcp/server.pyの
+# sync_from_archicad()がこのキーワード集合でプロパティ名を検索し、一致した
+# ものをproperties.legal_conditionsとして敷地Zoneに保存する。
+ARCHICAD_LEGAL_PROPERTY_KEYWORDS: dict[str, list[str]] = {
+    "kenpei_ritsu": ["建蔽率"],
+    "yoseki_ritsu": ["容積率"],
+    "douro_haba": ["前面道路幅", "道路幅員"],
+}
 
-    環境変数名はキーを大文字化したもの(例: land_use_category →
-    LAND_USE_CATEGORY)。未設定ならNoneを返す——これは「判定不能」ではなく
-    「入力が足りない」ことを示す。rule_engine.evaluate_legal_rule()がこれを
-    検知し、AIエージェントがユーザーに聞き返せる形(missing_inputs)に
-    変換する。
+
+def _clean_property_value(raw: str) -> str:
+    """Archicadのプロパティ値からよくある単位表記("%"・"m"等)を取り除く。
+
+    legal_inputs.pyの既存の値は環境変数由来の素の数値文字列(例: "60")を
+    前提にしているため(rule_engine._resolve_threshold()等がfloat()で直接
+    解釈する)、Archicad側で"60%"のように単位付きで入力されていても同じ
+    形式に揃える。末尾の単位のみを対象とする単純な処理で、それ以外の
+    書式の違いには対応しない。
     """
+    cleaned = raw.strip()
+    for suffix in ("%", "ｍ", "m"):
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)].strip()
+    return cleaned
+
+
+def _resolve_from_site_properties(key: str) -> str | None:
+    """敷地ZoneのArchicadカスタムProperty(properties.legal_conditions、
+    sync_from_archicad()が保存)からkeyに対応する値を探す。
+
+    ARCHICAD_LEGAL_PROPERTY_KEYWORDSに未登録のkey、または一度も同期して
+    いない・敷地Zoneが見つからない・該当プロパティが未設定の場合はNone。
+    """
+    keywords = ARCHICAD_LEGAL_PROPERTY_KEYWORDS.get(key)
+    if not keywords:
+        return None
+
+    for element in get_elements():
+        if element["type"] not in ("Zone", "Room", "Mesh"):
+            continue
+        try:
+            properties = json.loads(element["properties"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        legal_conditions = properties.get("legal_conditions") or {}
+        for property_name, value in legal_conditions.items():
+            if value is not None and any(kw in property_name for kw in keywords):
+                return _clean_property_value(str(value))
+
+    return None
+
+
+def resolve_legal_input(key: str) -> str | None:
+    """指定キーの法規条件の値を解決する。
+
+    (1)敷地ZoneのArchicadカスタムProperty(_resolve_from_site_properties()、
+    ARCHICAD_LEGAL_PROPERTY_KEYWORDSに登録されているkeyのみ対象)、
+    (2)環境変数(キーを大文字化したもの、例: land_use_category →
+    LAND_USE_CATEGORY)の順に解決する。いずれからも見つからなければNoneを
+    返す——これは「判定不能」ではなく「入力が足りない」ことを示す。
+    rule_engine.evaluate_legal_rule()がこれを検知し、AIエージェントが
+    ユーザーに聞き返せる形(missing_inputs)に変換する。
+    """
+    from_archicad = _resolve_from_site_properties(key)
+    if from_archicad is not None:
+        return from_archicad
+
     return os.environ.get(key.upper())
 
 

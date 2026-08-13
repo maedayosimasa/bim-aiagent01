@@ -52,23 +52,41 @@ def _zone_summary(element):
     }
 
 
-def _matches_keyword(element, keyword):
-    if keyword in (element["name"] or ""):
+def matches_zone_keyword(
+    element_type: str, name: str | None, archicad_id: str | None, layer_name: str | None, keyword: str
+) -> bool:
+    """Zone/Room/Meshがkeywordに一致するかを判定する(名前ベースの部分一致)。
+
+    find_zones_by_name()(SQLiteキャッシュ済みの要素向け)と
+    archicad_mcp/server.pyのsync_from_archicad()(同期中、まだ未挿入の
+    要素向け)の両方から呼べるよう、DB行の形に依存しない引数を取る。
+    Zone/Roomはname、Meshはarchicad_id/layer_nameで照合する
+    (モジュールdocstring参照)。
+    """
+    if keyword in (name or ""):
         return True
 
-    if element["type"] != "Mesh":
+    if element_type != "Mesh":
         return False
 
-    try:
-        properties = json.loads(element["properties"] or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return False
-
-    for value in (properties.get("archicad_id"), properties.get("layer_name")):
+    for value in (archicad_id, layer_name):
         if value and keyword in value:
             return True
 
     return False
+
+
+def _matches_keyword(element, keyword):
+    try:
+        properties = json.loads(element["properties"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        properties = {}
+
+    return matches_zone_keyword(
+        element["type"], element["name"],
+        properties.get("archicad_id"), properties.get("layer_name"),
+        keyword,
+    )
 
 
 def find_zones_by_name(keyword):
