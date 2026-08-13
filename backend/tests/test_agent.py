@@ -13,7 +13,7 @@ import anthropic
 import httpx
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -40,6 +40,16 @@ class _FakeToolCallingModel(BaseChatModel):
     @property
     def _llm_type(self):
         return "fake-tool-calling-model"
+
+
+class _RecordingFakeToolCallingModel(_FakeToolCallingModel):
+    """_FakeToolCallingModelに加え、呼び出しごとに受け取ったmessagesを記録する。"""
+
+    received: list = []
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.received.append(list(messages))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -241,6 +251,74 @@ def test_run_chat_interrupts_again_when_still_missing_after_resume(monkeypatch, 
 
     assert resumed["interrupted"] is True
     assert resumed["interrupt"]["rule_id"] == "effective_daylighting_ratio"
+
+
+def test_build_agent_clears_stale_tool_results_but_preserves_evidence_tools(monkeypatch):
+    # (2026-08-13追加、Context 3層分離)ContextEditingMiddleware(agent/graph.py)
+    # が、除外リストに無いツール結果(探索的なBIM検索等)は古くなると
+    # [cleared]に置き換える一方、Rule Engineの確定的な判定結果
+    # (engine_code_daylighting_tool等)は間引かれずに残ることを確認する。
+    monkeypatch.setattr(agent_graph, "_CLEAR_TOOL_USES_TRIGGER_TOKENS", 1)
+    monkeypatch.setattr(agent_graph, "_CLEAR_TOOL_USES_KEEP", 1)
+
+    responses = [
+        AIMessage(content="", tool_calls=[
+            {"name": "list_bim_elements_tool", "args": {}, "id": "call_1", "type": "tool_call"}
+        ]),
+        AIMessage(content="", tool_calls=[
+            {"name": "engine_code_daylighting_tool", "args": {}, "id": "call_2", "type": "tool_call"}
+        ]),
+        AIMessage(content="", tool_calls=[
+            {"name": "list_bim_elements_tool", "args": {}, "id": "call_3", "type": "tool_call"}
+        ]),
+        AIMessage(content="完了しました。"),
+    ]
+    fake_model = _RecordingFakeToolCallingModel(responses=responses, received=[])
+    monkeypatch.setattr(agent_graph, "ChatAnthropic", lambda model: fake_model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    asyncio.run(agent_service.run_chat("session-context-edit", "採光チェックして"))
+
+    # 4回目(最終)のモデル呼び出しに渡されたメッセージを検証する。
+    last_call_messages = fake_model.received[-1]
+    by_call_id = {
+        m.tool_call_id: m for m in last_call_messages if isinstance(m, ToolMessage)
+    }
+
+    # list_bim_elements_tool(call_1、除外リストに無い)は古くなり間引かれる。
+    assert by_call_id["call_1"].content == "[cleared]"
+    # engine_code_daylighting_tool(call_2)は除外リストにあるため間引かれない。
+    assert by_call_id["call_2"].content != "[cleared]"
+    # 直近1件(keep=1)は無条件に残るため、call_3も間引かれない。
+    assert by_call_id["call_3"].content != "[cleared]"
+
+
+def test_get_history_shows_full_content_even_after_clearing(monkeypatch, test_db):
+    # ContextEditingMiddlewareはモデルへのリクエスト直前のコピーだけを編集し、
+    # checkpointerに永続化された会話履歴そのものは変更しない(get_history()・
+    # frontendの表示には常に完全な履歴が残ることを確認する)。
+    monkeypatch.setattr(agent_graph, "_CLEAR_TOOL_USES_TRIGGER_TOKENS", 1)
+    monkeypatch.setattr(agent_graph, "_CLEAR_TOOL_USES_KEEP", 0)
+
+    responses = [
+        AIMessage(content="", tool_calls=[
+            {"name": "list_bim_elements_tool", "args": {}, "id": "call_1", "type": "tool_call"}
+        ]),
+        AIMessage(content="", tool_calls=[
+            {"name": "list_bim_elements_tool", "args": {}, "id": "call_2", "type": "tool_call"}
+        ]),
+        AIMessage(content="完了しました。"),
+    ]
+    _install_fake_model(monkeypatch, responses)
+    agent_service.set_checkpointer(InMemorySaver())
+
+    asyncio.run(agent_service.run_chat("session-history-intact", "要素数を教えて"))
+
+    history = asyncio.run(agent_service.get_history("session-history-intact"))
+    tool_entries = [h for h in history if h["role"] == "tool"]
+
+    assert len(tool_entries) == 2
+    assert all(entry["content"] != "[cleared]" for entry in tool_entries)
 
 
 def _install_fake_report_model(monkeypatch, report_text):

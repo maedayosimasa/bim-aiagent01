@@ -6,13 +6,62 @@ LangGraphのprebuilt ReActエージェント(langgraph.prebuilt.create_react_age
 そのまま使い、独自のグラフ制御は持たない(まずは素直な構成で動かし、将来
 複数ステップの解析フロー(法規チェック→引用条文添付→レポート生成、等)を
 グラフとして組みたくなった時点で拡張する)。
+
+**(2026-08-13追加)Context 3層分離(ユーザー提示のLayer1/2/3案の実質的解決)**:
+ユーザー提示の「Layer1(会話)は圧縮対象、Layer2(Agent Working State)は
+必要部分のみ保持、Layer3(Engine Evidence)は圧縮しない」という3層分離案を
+検討した結果、messages(会話+ツール呼び出し履歴)とは別のevidence用state
+フィールドを新設する自前実装ではなく、LangChain 1.x標準の
+`ContextEditingMiddleware`(Anthropicの`clear_tool_uses_20250919`相当)を採用
+した——これは`wrap_model_call`フックでモデルへのリクエスト直前にメッセージの
+deepcopyを編集するだけで、checkpointerに永続化された会話履歴そのものは
+変更しない(`get_history()`・frontendの表示には常に完全な履歴が残る)。
+つまり「LLMへ次に送る分だけを間引く」という自前3層分離が本来やりたかった
+ことと同じ効果を、実績のあるライブラリ機能で低リスクに実現できる。
+`_EVIDENCE_TOOLS_EXCLUDED_FROM_CLEARING`(Rule Engineの確定的な判定結果=
+Layer3相当)は経過ターン数に関わらず常にLLMのコンテキストに残し、それ以外の
+探索的なBIM検索・法令検索結果(Layer2相当)は`_CLEAR_TOOL_USES_KEEP`件を
+超えて古くなると`[cleared]`に置き換えられる。
 """
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ClearToolUsesEdit, ContextEditingMiddleware
 from langchain_anthropic import ChatAnthropic
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from .tools import AGENT_TOOLS
+
+# 会話の累積トークン数(近似値)がこれを超えたら古いツール結果の間引きを
+# 検討する。2026-08-11の事故(list_bim_elements_tool等の全件ダンプで実測
+# 約224万トークン)はツール出力自体を絞ることで既に解消済みのため、ここでは
+# 「長時間・多ターンの会話でじわじわ蓄積する」ケースを想定し、Claude Opus 5
+# のコンテキスト上限(100万トークン)に対して十分な余裕を残す値にしている。
+_CLEAR_TOOL_USES_TRIGGER_TOKENS = 300_000
+# 直近何件のツール結果を(除外ツール以外でも)無条件に残すか。
+_CLEAR_TOOL_USES_KEEP = 5
+# Rule Engineの確定的な判定結果(PASS/FAIL/UNKNOWN+法令根拠)はLayer3
+# (Engine Evidence)に相当し、古くなっても間引かれるとユーザーが会話の
+# 途中でその判定結果を参照できなくなる。探索的なBIM検索・法令検索
+# (list_bim_elements_tool等)は間引き対象のまま残す。
+_EVIDENCE_TOOLS_EXCLUDED_FROM_CLEARING = (
+    "engine_legal_rules_evaluate_tool",
+    "engine_code_daylighting_tool",
+    "engine_code_accessible_doors_tool",
+)
+
+
+def _build_middleware() -> list:
+    return [
+        ContextEditingMiddleware(
+            edits=[
+                ClearToolUsesEdit(
+                    trigger=_CLEAR_TOOL_USES_TRIGGER_TOKENS,
+                    keep=_CLEAR_TOOL_USES_KEEP,
+                    exclude_tools=_EVIDENCE_TOOLS_EXCLUDED_FROM_CLEARING,
+                ),
+            ],
+        ),
+    ]
 
 SYSTEM_PROMPT = """\
 あなたはBIM空間知能エンジン(bim_aiagent)のAIアシスタントです。Archicadから
@@ -83,4 +132,5 @@ def build_agent(
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
+        middleware=_build_middleware(),
     )
