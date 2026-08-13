@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from backend.database import db
 
 
@@ -54,3 +56,51 @@ def test_delete_element_removes_row(sample_elements):
 
 def test_delete_element_missing_guid_returns_false(test_db):
     assert db.delete_element("nope") is False
+
+
+def test_insert_token_usage_and_get_daily_aggregates(test_db):
+    db.insert_token_usage("chat", "session-1", "claude-opus-5", 1000, 500, 0.0175)
+    db.insert_token_usage("chat", "session-1", "claude-opus-5", 200, 100, 0.0035)
+    db.insert_token_usage("legal_report", None, "claude-opus-5", 300, 150, 0.00525)
+
+    days = db.get_token_usage_daily()
+
+    assert len(days) == 1
+    day = days[0]
+    assert day["call_count"] == 3
+    assert day["input_tokens"] == 1500
+    assert day["output_tokens"] == 750
+    assert day["cost_usd"] == pytest.approx(0.02625)
+
+
+def test_get_token_usage_by_job_groups_chat_by_session_and_report_per_run(test_db):
+    db.insert_token_usage("chat", "session-1", "claude-opus-5", 1000, 500, 0.0175)
+    db.insert_token_usage("chat", "session-1", "claude-opus-5", 200, 100, 0.0035)
+    db.insert_token_usage("chat", "session-2", "claude-opus-5", 50, 20, 0.00075)
+    db.insert_token_usage("legal_report", None, "claude-opus-5", 300, 150, 0.00525)
+    db.insert_token_usage("legal_report", None, "claude-opus-5", 400, 200, 0.007)
+
+    jobs = db.get_token_usage_by_job()
+    jobs_by_id = {(row["kind"], row["job_id"]): row for row in jobs}
+
+    # session-1は2回のchat呼び出しをまたいで1つの「作業」として合算される。
+    session1 = jobs_by_id[("chat", "session-1")]
+    assert session1["call_count"] == 2
+    assert session1["input_tokens"] == 1200
+    assert session1["output_tokens"] == 600
+
+    session2 = jobs_by_id[("chat", "session-2")]
+    assert session2["call_count"] == 1
+
+    # legal_reportにはsession_idが無いため、実行(行)ごとに別の「作業」になる。
+    report_jobs = [row for row in jobs if row["kind"] == "legal_report"]
+    assert len(report_jobs) == 2
+    assert all(row["call_count"] == 1 for row in report_jobs)
+
+
+def test_insert_token_usage_allows_null_cost(test_db):
+    db.insert_token_usage("chat", "session-1", "unknown-model", 10, 5, None)
+
+    days = db.get_token_usage_daily()
+
+    assert days[0]["cost_usd"] is None

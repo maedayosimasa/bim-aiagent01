@@ -525,3 +525,35 @@ export type LegalReportResponse = {
 export function generateLegalReport() {
   return post<LegalReportResponse>("/agent/legal_report", undefined, AGENT_TIMEOUT_MS);
 }
+
+// AIエージェント(Claude API)のトークン使用量。agent/service.pyがrun_chat
+// (会話)/run_legal_report(法規レポート)の呼び出しのたびに実測値を記録した
+// ものの集計であり、見積もりではない。cost_usdは料金表(agent/pricing.py)に
+// 無いモデルの場合null。
+
+export type TokenUsageDailyRow = {
+  date: string;
+  call_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+};
+
+export type TokenUsageJobRow = {
+  kind: "chat" | "legal_report";
+  job_id: string;
+  started_at: string;
+  last_at: string;
+  call_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+};
+
+export function getTokenUsageDaily() {
+  return get<{ days: TokenUsageDailyRow[] }>("/agent/usage/daily");
+}
+
+export function getTokenUsageJobs() {
+  return get<{ jobs: TokenUsageJobRow[] }>("/agent/usage/jobs");
+}

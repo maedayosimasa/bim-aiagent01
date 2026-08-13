@@ -52,6 +52,7 @@ REPORT_SYSTEM_PROMPT = """\
 class LegalReportState(TypedDict):
     checks: list[dict]
     report: str
+    usage: dict
 
 
 async def _run_checks(state: LegalReportState) -> dict:
@@ -126,7 +127,15 @@ def _build_generate_report_node(model_name: str):
             HumanMessage(content=f"以下の判定結果からレポートを作成してください:\n\n{summary}"),
         ])
 
-        return {"report": message_text(response)}
+        usage_metadata = getattr(response, "usage_metadata", None) or {}
+
+        return {
+            "report": message_text(response),
+            "usage": {
+                "input_tokens": usage_metadata.get("input_tokens") or 0,
+                "output_tokens": usage_metadata.get("output_tokens") or 0,
+            },
+        }
 
     return generate_report
 

@@ -131,6 +131,35 @@ def create_tables():
     )
 
 
+    # AIエージェント(agent/service.py)のClaude API呼び出し1回ごとの
+    # トークン使用量。session_idはrun_chat(会話)のみ持ち、run_legal_report
+    # (単発実行、session_id無し)はNULLになる。cost_usdはagent/pricing.pyの
+    # 料金表に無いモデルの場合NULL(料金不明)。他のスナップショット系テーブルと
+    # 異なり、これは履歴を積む(全削除しない)——日次/作業ごとの集計に使うため。
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS token_usage
+        (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            created_at TEXT,
+
+            kind TEXT NOT NULL,
+
+            session_id TEXT,
+
+            model TEXT,
+
+            input_tokens INTEGER NOT NULL,
+
+            output_tokens INTEGER NOT NULL,
+
+            cost_usd REAL
+        )
+        """
+    )
+
+
     conn.commit()
 
     conn.close()
@@ -542,6 +571,111 @@ def get_graph_relation_results():
 
     cursor.execute(
         "SELECT * FROM graph_relation_results ORDER BY id"
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def insert_token_usage(kind, session_id, model, input_tokens, output_tokens, cost_usd):
+    """AIエージェントのClaude API呼び出し1回分のトークン使用量を1行追加する。
+
+    engine_analysis_results等と異なり全削除しない(履歴を積む)。
+    kindは"chat"(run_chat、session_id有り)/"legal_report"(run_legal_report、
+    session_id無し)。cost_usdはagent/pricing.pyで料金表に無いモデルの場合None。
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO token_usage
+        (
+            created_at,
+            kind,
+            session_id,
+            model,
+            input_tokens,
+            output_tokens,
+            cost_usd
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            datetime.now(timezone.utc).isoformat(),
+            kind,
+            session_id,
+            model,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+        ),
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+def get_token_usage_daily():
+    """日付(UTC)ごとにトークン使用量・料金を集計して新しい順に返す。"""
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            date(created_at) AS date,
+            COUNT(*) AS call_count,
+            SUM(input_tokens) AS input_tokens,
+            SUM(output_tokens) AS output_tokens,
+            SUM(cost_usd) AS cost_usd
+        FROM token_usage
+        GROUP BY date(created_at)
+        ORDER BY date DESC
+        """
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_token_usage_by_job():
+    """「作業」(chatはsession_id単位、legal_reportは実行ごと)でトークン使用量を集計する。
+
+    legal_reportにはsession_idが無い(単発実行のため)ので、id列を使って
+    行ごとに個別の「作業」として扱う。
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            kind,
+            COALESCE(session_id, 'legal_report_' || id) AS job_id,
+            MIN(created_at) AS started_at,
+            MAX(created_at) AS last_at,
+            COUNT(*) AS call_count,
+            SUM(input_tokens) AS input_tokens,
+            SUM(output_tokens) AS output_tokens,
+            SUM(cost_usd) AS cost_usd
+        FROM token_usage
+        GROUP BY kind, job_id
+        ORDER BY last_at DESC
+        """
     )
 
     rows = cursor.fetchall()

@@ -247,3 +247,33 @@ def test_archicad_status_endpoint(api_client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["configured"] is False
+
+
+def test_agent_usage_daily_endpoint_empty(api_client, test_db):
+    response = api_client.get("/agent/usage/daily")
+
+    assert response.status_code == 200
+    assert response.json() == {"days": []}
+
+
+def test_agent_usage_jobs_endpoint(api_client, test_db):
+    from backend.database import db as db_module
+
+    db_module.insert_token_usage("chat", "session-1", "claude-opus-5", 100, 50, 0.00175)
+    db_module.insert_token_usage("legal_report", None, "claude-opus-5", 200, 100, 0.0035)
+
+    daily = api_client.get("/agent/usage/daily")
+    assert daily.status_code == 200
+    days = daily.json()["days"]
+    assert len(days) == 1
+    assert days[0]["call_count"] == 2
+    assert days[0]["input_tokens"] == 300
+    assert days[0]["output_tokens"] == 150
+
+    jobs = api_client.get("/agent/usage/jobs")
+    assert jobs.status_code == 200
+    jobs_data = jobs.json()["jobs"]
+    assert {j["kind"] for j in jobs_data} == {"chat", "legal_report"}
+    chat_job = next(j for j in jobs_data if j["kind"] == "chat")
+    assert chat_job["job_id"] == "session-1"
+    assert chat_job["input_tokens"] == 100

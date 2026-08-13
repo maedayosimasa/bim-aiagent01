@@ -10,6 +10,7 @@ import GraphTab from "./tabs/GraphTab";
 import PropertiesTab from "./tabs/PropertiesTab";
 import SpaceViewer3D from "./tabs/SpaceViewer3D";
 import AnalysisSnapshotTab from "./tabs/AnalysisSnapshotTab";
+import UsageTab from "./tabs/UsageTab";
 
 const TABS = [
   { key: "dashboard", label: "ダッシュボード", Component: Dashboard },
@@ -21,6 +22,7 @@ const TABS = [
   { key: "graph", label: "空間関係グラフ", Component: GraphTab },
   { key: "viewer3d", label: "3Dビュー", Component: SpaceViewer3D },
   { key: "analysis-db", label: "解析結果DB", Component: AnalysisSnapshotTab },
+  { key: "usage", label: "利用状況", Component: UsageTab },
   { key: "properties", label: "プロパティ編集", Component: PropertiesTab },
 ] as const;
 

@@ -19,6 +19,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from backend.agent import graph as agent_graph
 from backend.agent import report_graph as agent_report_graph
 from backend.agent import service as agent_service
+from backend.database import db as db_module
 
 
 class _FakeToolCallingModel(BaseChatModel):
@@ -95,6 +96,49 @@ def test_run_chat_without_tool_call(monkeypatch):
     assert result["tool_calls"] == []
 
 
+def test_run_chat_records_token_usage(monkeypatch, test_db):
+    # ReActループ内でツール呼び出しを挟み2回LLMを呼ぶケース。両方のAIMessageの
+    # usage_metadataが合算されて、session_id単位の1「作業」として記録される
+    # ことを確認する(agent/pricing.pyの料金表でclaude-opus-5のコストも検証)。
+    responses = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "list_bim_elements_tool", "args": {}, "id": "call_1", "type": "tool_call"}
+            ],
+            usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+        ),
+        AIMessage(
+            content="0件です。",
+            usage_metadata={"input_tokens": 150, "output_tokens": 30, "total_tokens": 180},
+        ),
+    ]
+    _install_fake_model(monkeypatch, responses)
+
+    asyncio.run(agent_service.run_chat("session-usage", "何件?"))
+
+    jobs = db_module.get_token_usage_by_job()
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job["kind"] == "chat"
+    assert job["job_id"] == "session-usage"
+    assert job["call_count"] == 1
+    assert job["input_tokens"] == 250
+    assert job["output_tokens"] == 50
+    assert job["cost_usd"] == pytest.approx((250 * 5.00 + 50 * 25.00) / 1_000_000)
+
+
+def test_run_chat_without_usage_metadata_records_nothing(monkeypatch, test_db):
+    # フェイクモデルがusage_metadataを付与しない場合(古いLangChain挙動の
+    # フォールバック確認)、0件の行を残さないことを確認する。
+    responses = [AIMessage(content="こんにちは")]
+    _install_fake_model(monkeypatch, responses)
+
+    asyncio.run(agent_service.run_chat("session-no-usage", "こんにちは"))
+
+    assert db_module.get_token_usage_by_job() == []
+
+
 def test_run_chat_without_api_key_raises(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
@@ -169,6 +213,29 @@ def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_
     effective_daylighting_check = checks_by_id["effective_daylighting_ratio"]
     assert len(effective_daylighting_check["items"]) == 2  # room001, room002
     assert all(item["status"] == "fail" for item in effective_daylighting_check["items"])
+
+
+def test_run_legal_report_records_token_usage(monkeypatch, sample_elements):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    fake_model = _FakeToolCallingModel(
+        responses=[
+            AIMessage(
+                content="レポート本文",
+                usage_metadata={"input_tokens": 400, "output_tokens": 80, "total_tokens": 480},
+            )
+        ]
+    )
+    monkeypatch.setattr(agent_report_graph, "ChatAnthropic", lambda model: fake_model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    asyncio.run(agent_service.run_legal_report())
+
+    jobs = [j for j in db_module.get_token_usage_by_job() if j["kind"] == "legal_report"]
+    assert len(jobs) == 1
+    assert jobs[0]["input_tokens"] == 400
+    assert jobs[0]["output_tokens"] == 80
+    # run_legal_report()にはsession_idが無いため、job_idはid列から合成される。
+    assert jobs[0]["job_id"].startswith("legal_report_")
 
 
 def test_summarize_for_prompt_reports_missing_inputs_as_unjudged():

@@ -746,6 +746,23 @@ async def agent_history(session_id: str):
     return {"session_id": session_id, "messages": messages}
 
 
+@app.get("/agent/usage/daily")
+def agent_usage_daily():
+    # AIエージェント(Claude API)のトークン使用量を日付(UTC)単位で集計する。
+    # agent/service.pyのrun_chat/run_legal_reportが呼び出しのたびに
+    # database.db.insert_token_usage()へ記録した実測値の集計であり、
+    # 見積もりではない。cost_usdは料金表(agent/pricing.py)に無いモデルの場合null。
+    rows = db_module.get_token_usage_daily()
+    return {"days": [dict(row) for row in rows]}
+
+
+@app.get("/agent/usage/jobs")
+def agent_usage_jobs():
+    # 「作業」単位(chatはsession_id、legal_reportは実行ごと)でのトークン使用量。
+    rows = db_module.get_token_usage_by_job()
+    return {"jobs": [dict(row) for row in rows]}
+
+
 @app.post("/agent/legal_report")
 async def agent_legal_report():
     # 法規チェック→引用条文添付→レポート生成、の複数ステップグラフ

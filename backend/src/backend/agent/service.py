@@ -17,8 +17,10 @@ import anthropic
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from ..database import db
 from .graph import build_agent
 from .message_utils import message_text as _message_text
+from .pricing import calc_cost_usd
 from .report_graph import build_report_graph
 
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_AGENT_MODEL", "claude-opus-5")
@@ -112,7 +114,7 @@ def _tool_result_text(message: ToolMessage) -> str:
     return message.content if isinstance(message.content, str) else str(message.content)
 
 
-def _extract_turn(messages: list) -> tuple[str, list[dict]]:
+def _extract_turn(messages: list) -> tuple[str, list[dict], dict]:
     # 直近のHumanMessage以降(=今回のターンで新しく増えた分)だけを対象にする。
     # checkpointer経由でmessagesには過去ターンの履歴も含まれているため。
     last_human_idx = None
@@ -130,12 +132,19 @@ def _extract_turn(messages: list) -> tuple[str, list[dict]]:
 
     response_text = ""
     tool_calls: list[dict] = []
+    # ReActループ内でツール呼び出しを挟み複数回LLMを呼ぶことがあるため、
+    # 今回のターンに含まれる全AIMessageのusage_metadataを合算する。
+    input_tokens = 0
+    output_tokens = 0
 
     for msg in turn_messages:
         if isinstance(msg, AIMessage):
             text = _message_text(msg)
             if text:
                 response_text = text
+            usage_metadata = getattr(msg, "usage_metadata", None) or {}
+            input_tokens += usage_metadata.get("input_tokens") or 0
+            output_tokens += usage_metadata.get("output_tokens") or 0
         elif isinstance(msg, ToolMessage):
             call_info = call_info_by_id.get(msg.tool_call_id, {})
             tool_calls.append({
@@ -144,7 +153,22 @@ def _extract_turn(messages: list) -> tuple[str, list[dict]]:
                 "result": _tool_result_text(msg),
             })
 
-    return response_text, tool_calls
+    usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+
+    return response_text, tool_calls, usage
+
+
+def _record_token_usage(kind: str, session_id: str | None, usage: dict) -> None:
+    input_tokens = usage.get("input_tokens") or 0
+    output_tokens = usage.get("output_tokens") or 0
+
+    if not input_tokens and not output_tokens:
+        # AIMessageにusage_metadataが無かった(古いLangChainバージョン等)場合。
+        # 0件の行を残しても意味が無いため記録しない。
+        return
+
+    cost_usd = calc_cost_usd(DEFAULT_MODEL, input_tokens, output_tokens)
+    db.insert_token_usage(kind, session_id, DEFAULT_MODEL, input_tokens, output_tokens, cost_usd)
 
 
 async def run_chat(session_id: str, message: str) -> dict:
@@ -157,7 +181,8 @@ async def run_chat(session_id: str, message: str) -> dict:
         config=config,
     )
 
-    response_text, tool_calls = _extract_turn(result["messages"])
+    response_text, tool_calls, usage = _extract_turn(result["messages"])
+    _record_token_usage("chat", session_id, usage)
 
     return {
         "session_id": session_id,
@@ -202,5 +227,7 @@ async def run_legal_report() -> dict:
     graph = _get_report_graph()
 
     result = await _ainvoke_with_context_guard(graph, {"checks": [], "report": ""})
+
+    _record_token_usage("legal_report", None, result.get("usage") or {})
 
     return {"checks": result["checks"], "report": result["report"]}
