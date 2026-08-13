@@ -1,16 +1,18 @@
 import asyncio
 import json
 
+import pytest
+
 from backend.engine import rule_engine
 from backend.legal_mcp import client as legal_client
 
 
 def test_status_for_uses_comparator():
-    verification = rule_engine.Verification(comparator="gte", threshold=0.8, unit="m")
+    comparator = rule_engine.RuleComparator.GTE
 
-    assert rule_engine._status_for(0.9, verification) is rule_engine.RuleCheckStatus.PASS
-    assert rule_engine._status_for(0.7, verification) is rule_engine.RuleCheckStatus.FAIL
-    assert rule_engine._status_for(None, verification) is rule_engine.RuleCheckStatus.UNKNOWN
+    assert rule_engine._status_for(0.9, comparator, 0.8) is rule_engine.RuleCheckStatus.PASS
+    assert rule_engine._status_for(0.7, comparator, 0.8) is rule_engine.RuleCheckStatus.FAIL
+    assert rule_engine._status_for(None, comparator, 0.8) is rule_engine.RuleCheckStatus.UNKNOWN
 
 
 def test_load_legal_rules_returns_known_rules():
@@ -18,12 +20,19 @@ def test_load_legal_rules_returns_known_rules():
 
     assert set(rules) == {
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
+        "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
+        "evacuation_walking_distance",
     }
     assert rules["daylighting_ratio"].check == "daylighting_ratio"
     assert rules["daylighting_ratio"].concept_id == "daylighting"
     assert rules["accessible_door_width"].verification.threshold == 0.8
     assert rules["effective_daylighting_ratio"].check == "effective_daylighting_ratio"
     assert rules["effective_daylighting_ratio"].concept_id == "daylighting"
+    assert rules["ventilation_ratio"].check == "ventilation_ratio"
+    assert rules["ventilation_ratio"].verification.threshold == 0.05
+    assert rules["floor_area_ratio"].verification.threshold_from_input == "yoseki_ritsu"
+    assert rules["site_road_frontage"].verification.threshold == 2.0
+    assert rules["evacuation_walking_distance"].verification.threshold == 30.0
 
 
 def test_get_legal_rule_returns_none_for_unknown_id():
@@ -285,3 +294,136 @@ def test_evaluate_legal_rule_tags_legal_sources_as_candidate(test_db, monkeypatc
     source = result["legal_sources"][0]
     assert source["evidence_confidence"] == "candidate"
     assert source["confidence"] == 0.5  # Legal Knowledge Builder側の抽出confidenceとは別物
+
+
+# (2026-08-13追加)容積率・接道長さ・避難歩行距離・換気の4チェックの回帰テスト。
+# 個々の計算ロジック自体はengine/floor_area_ratio.py・site_frontage.py・
+# evacuation_engine.pyで別途テスト済みのため、ここではRule Engine経由の
+# 配線(threshold_from_input解決・missing_inputs・固定閾値との比較)を検証する。
+
+def test_evaluate_floor_area_ratio_reports_missing_inputs_when_yoseki_ritsu_unset(test_db, monkeypatch):
+    monkeypatch.delenv("YOSEKI_RITSU", raising=False)
+
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("floor_area_ratio"))
+
+    assert result["threshold"] is None
+    assert result["items"] == []
+    assert [m["key"] for m in result["missing_inputs"]] == ["yoseki_ritsu"]
+
+
+def test_evaluate_floor_area_ratio_resolves_threshold_from_percent_input(test_db, monkeypatch):
+    # yoseki_ritsuは%表記(legal_inputs.pyのdescription通り)で設定し、
+    # 比率に変換して比較に使われることを確認する。
+    monkeypatch.setenv("YOSEKI_RITSU", "200")
+
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    test_db.insert_element(
+        "room1", "Room", "居室",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("floor_area_ratio"))
+
+    assert result["missing_inputs"] == []
+    assert result["threshold"] == 2.0  # "200"(%) → 2.0(比率)
+    item = result["items"][0]
+    assert item["measured_value"] == 1.0  # 100m^2 / 100m^2
+    assert item["status"] == "pass"  # 1.0 <= 2.0
+
+
+def test_evaluate_floor_area_ratio_raises_for_unparseable_input(test_db, monkeypatch):
+    monkeypatch.setenv("YOSEKI_RITSU", "たくさん")
+
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    try:
+        asyncio.run(rule_engine.evaluate_legal_rule_by_id("floor_area_ratio"))
+        assert False, "ValueErrorが発生するはず"
+    except ValueError:
+        pass
+
+
+def test_evaluate_site_road_frontage_via_rule_id(test_db, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    test_db.insert_element(
+        "road1", "Zone", "前面道路",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[-1000, -4000], [11000, -4000], [11000, 0], [-1000, 0]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("site_road_frontage"))
+
+    assert result["threshold"] == 2.0
+    item = result["items"][0]
+    assert item["status"] == "pass"  # 約10.6m >= 2.0m
+
+
+def test_evaluate_evacuation_walking_distance_via_rule_id(test_db, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]]}),
+    )
+    test_db.insert_element(
+        "door1", "Door", "外部ドア",
+        json.dumps({}),
+        json.dumps({"type": "point", "x": 4150, "y": 1500}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("evacuation_walking_distance"))
+
+    assert result["threshold"] == 30.0
+    item = result["items"][0]
+    assert item["target_guid"] == "room1"
+    assert item["status"] == "pass"  # 0.15m <= 30.0m
+
+
+def test_evaluate_ventilation_ratio_via_rule_id(test_db, monkeypatch):
+    # daylighting_ratioと同じ計算関数を閾値だけ変えて再利用している
+    # ことを確認する(RULE_CHECK_REGISTRY["ventilation_ratio"]参照)。
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 5000], [0, 5000]]}),
+    )
+    # 窓面積3m^2/床面積50m^2 = 0.06 (>= 1/20だがpass、< 1/7でdaylightingならfail)。
+    test_db.insert_element(
+        "window1", "Window", "窓",
+        json.dumps({"archicad_details": {"width": 3, "height": 1}}),
+        json.dumps({"type": "point", "x": 0, "y": 2500}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("ventilation_ratio"))
+
+    assert result["threshold"] == 0.05
+    item = result["items"][0]
+    assert item["measured_value"] == pytest.approx(0.06)
+    assert item["status"] == "pass"  # 0.06 >= 1/20

@@ -26,5 +26,41 @@
     "verification": {"comparator": "gte", "threshold": 0.14285714285714285, "unit": "ratio"},
     "required_inputs": ["land_use_category"],
     "disclaimer": "参考値です。建築基準法施行令第20条の採光補正係数(D/H×係数−定数)を用いた計算ですが、敷地境界線・前面道路がZoneとしてモデル化されていない、または開口部の所属壁・直上の建築物部分が特定できない場合は計算できません(その場合、実際の値は結果より高い可能性があります)。天窓・縁側等の補正係数、水平距離7m/5m/4m以上の緩和規定は未実装です。用途地域は環境変数LAND_USE_CATEGORY(既定residential)の指定値を使用しており、実際の用途地域と異なる場合は結果が変わります。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "ventilation_ratio",
+    "title": "換気の有効換気面積比(参考値、建築基準法28条2項)",
+    "concept_id": "ventilation",
+    "applies_when": {"entity_type": "Zone"},
+    "check": "ventilation_ratio",
+    "verification": {"comparator": "gte", "threshold": 0.05, "unit": "ratio"},
+    "disclaimer": "参考値です。建築基準法28条2項の有効換気面積は、居室の用途・換気設備の設置状況により基準が異なりますが、この値は窓面積/床面積の単純比率(採光有効面積比と同じ計算、開閉可能な部分のみを区別していません)による目安に過ぎません。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "floor_area_ratio",
+    "title": "容積率(参考値、建築基準法52条)",
+    "concept_id": "floor_area_ratio",
+    "applies_when": {"entity_type": "Zone(敷地境界線)"},
+    "check": "floor_area_ratio",
+    "verification": {"comparator": "lte", "threshold_from_input": "yoseki_ritsu", "unit": "ratio"},
+    "disclaimer": "参考値です。延べ面積はBIMモデル上の実室Zone面積の合計による近似値であり、共用廊下・階段等の扱いや壁芯・内法の違いにより、確認申請上の延べ面積とは一致しない場合があります。前面道路幅員による容積率の別途制限(建築基準法52条2項)は未実装です。敷地境界線がZoneとしてモデル化されていない場合は計算できません。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "site_road_frontage",
+    "title": "接道長さ(参考値、建築基準法43条)",
+    "concept_id": "road",
+    "applies_when": {"entity_type": "Zone(敷地境界線)"},
+    "check": "site_road_frontage",
+    "verification": {"comparator": "gte", "threshold": 2.0, "unit": "m"},
+    "disclaimer": "参考値です。敷地境界線Zoneと前面道路Zoneの境界線が幾何的にどれだけ重なっているかによる近似値であり、道路台帳等の正式な測量値ではありません。接道義務(建築基準法43条)の角地緩和・自治体条例による付加規定は未実装です。前面道路がZoneとしてモデル化されていない場合は判定不能です。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "evacuation_walking_distance",
+    "title": "避難歩行距離(参考値、建築基準法施行令120条)",
+    "concept_id": "evacuation",
+    "applies_when": {"entity_type": "Zone"},
+    "check": "evacuation_walking_distance",
+    "verification": {"comparator": "lte", "threshold": 30.0, "unit": "m"},
+    "disclaimer": "参考値です。建築基準法施行令120条の歩行距離制限(構造・用途により30m〜60mと幅がある)のうち、最も厳しい値(30m)を一律の目安として使っています。実際の適用値は建物の耐火構造区分・主要用途・避難階段の配置により異なります。距離はRoom/Zone-Doorのグラフ上の幾何的な隙間の合計であり、部屋内部を実際に歩く経路長そのものではありません。複数階をまたぐ経路(階段の接続)は未対応です。法的な適合を保証するものではありません。"
   }
 ]

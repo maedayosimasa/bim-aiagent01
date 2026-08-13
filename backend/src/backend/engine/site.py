@@ -144,3 +144,14 @@ def get_road_boundaries():
         road.update(_estimate_width_and_centerline(road["points"]))
 
     return roads
+
+
+def non_room_zone_guids() -> set[str]:
+    """敷地境界線・前面道路として検索されるZone/Meshのguid集合を返す。
+
+    graph.room.find_rooms()はこれらを除外しないため(命名ベースの検索は
+    room.pyの幾何包含判定とは別の仕組みのため)、部屋として扱ってはいけない
+    箇所(採光計算・容積率計算等)で明示的に除外するために使う
+    (engine/effective_daylighting.pyで最初に発覚した問題への対応と同じ)。
+    """
+    return {z["guid"] for z in get_site_boundary()} | {z["guid"] for z in get_road_boundaries()}

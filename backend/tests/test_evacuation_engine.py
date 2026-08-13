@@ -1,6 +1,6 @@
 import json
 
-from backend.engine.evacuation_engine import find_evacuation_routes
+from backend.engine.evacuation_engine import compute_evacuation_walking_distances, find_evacuation_routes
 
 
 def test_find_evacuation_routes_finds_exterior_door_and_route(test_db):
@@ -74,3 +74,43 @@ def test_find_evacuation_routes_no_exterior_doors_marks_all_unreachable(test_db)
 
     assert result["exterior_doors"] == []
     assert all(not route["reachable"] for route in result["routes"])
+
+
+def test_compute_evacuation_walking_distances_converts_mm_to_m(test_db):
+    # test_find_evacuation_routes_finds_exterior_door_and_route()と同じ配置。
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]]}),
+    )
+    test_db.insert_element(
+        "door1", "Door", "内部ドア",
+        json.dumps({}),
+        json.dumps({"type": "point", "x": 4150, "y": 1500}),
+    )
+    test_db.insert_element(
+        "room2", "Room", "居室B(廊下)",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[4300, 0], [8300, 0], [8300, 3000], [4300, 3000]]}),
+    )
+    test_db.insert_element(
+        "door2", "Door", "外部ドア",
+        json.dumps({}),
+        json.dumps({"type": "point", "x": 8450, "y": 1500}),
+    )
+    test_db.insert_element(
+        "room3", "Room", "孤立した部屋",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[20000, 0], [24000, 0], [24000, 3000], [20000, 3000]]}),
+    )
+
+    items = compute_evacuation_walking_distances()
+    by_guid = {i["target_guid"]: i for i in items}
+
+    assert by_guid["room2"]["measured_value"] == 0.15  # 150mm → 0.15m
+    assert by_guid["room1"]["measured_value"] == 0.45  # 450mm → 0.45m
+    assert by_guid["room1"]["evidence"]["reachable"] is True
+
+    # 到達不能な部屋は「歩行距離が長すぎる」ではなく判定不能(None)にする。
+    assert by_guid["room3"]["measured_value"] is None
+    assert by_guid["room3"]["evidence"]["reachable"] is False

@@ -131,6 +131,8 @@ def test_engine_legal_rules_endpoint(api_client):
     rule_ids = {r["rule_id"] for r in response.json()}
     assert rule_ids == {
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
+        "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
+        "evacuation_walking_distance",
     }
 
 

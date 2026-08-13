@@ -47,8 +47,11 @@ from pydantic import BaseModel
 from ..legal_mcp import client as legal_client
 from .code_engine import check_accessible_door_width, check_daylighting
 from .effective_daylighting import calculate_effective_daylighting
+from .evacuation_engine import compute_evacuation_walking_distances
 from .evidence import EvidenceConfidence, tag as tag_evidence
+from .floor_area_ratio import calculate_floor_area_ratio
 from .legal_inputs import get_legal_input_definition, resolve_legal_input
+from .site_frontage import calculate_site_road_frontage
 
 _RULES_PATH = Path(__file__).parent / "legal_rules.json"
 
@@ -110,8 +113,18 @@ _COMPARATOR_FNS: dict[RuleComparator, Callable[[float, float], bool]] = {
 
 class Verification(BaseModel):
     comparator: RuleComparator
-    threshold: float
+    threshold: float | None = None
     unit: str | None = None
+    threshold_from_input: str | None = None
+    """(2026-08-13追加)thresholdをlegal_rules.jsonの静的値ではなく、
+    engine/legal_inputs.pyのLEGAL_INPUT_DEFINITIONSからプロジェクト単位で
+    解決する場合のキー(例: "yoseki_ritsu")。容積率のように、閾値自体が
+    法令の固定値ではなく都市計画で指定される場合に使う(採光比1/7・
+    ドア幅0.8m等の固定閾値はthresholdをそのまま使う)。設定されている場合、
+    このキーはrequired_inputsと同様に不足チェックの対象になり、値は
+    "%"表記(legal_inputs.pyの既存ドキュメント通り)として100で除して
+    比率に変換してから比較する。thresholdとthreshold_from_inputは排他的
+    (両方設定されている場合はthreshold_from_inputが優先される)。"""
 
 
 class LegalRule(BaseModel):
@@ -192,6 +205,14 @@ RULE_CHECK_REGISTRY: dict[str, Callable[[], list[dict]]] = {
     "daylighting_ratio": _compute_daylighting_ratio,
     "accessible_door_width": _compute_accessible_door_width,
     "effective_daylighting_ratio": _compute_effective_daylighting_ratio,
+    # (2026-08-13追加)換気の有効換気面積比(建築基準法28条2項)は採光
+    # (28条1項)と同じ「窓面積/床面積」の単純比を使う(この単純化のレベルは
+    # daylighting_ratioと同一、Archicad側にoperable/fixedの区別が無いため)。
+    # 閾値(1/20)だけがlegal_rules.json側で異なるため、計算関数は共有する。
+    "ventilation_ratio": _compute_daylighting_ratio,
+    "floor_area_ratio": calculate_floor_area_ratio,
+    "site_road_frontage": calculate_site_road_frontage,
+    "evacuation_walking_distance": compute_evacuation_walking_distances,
 }
 
 
@@ -204,11 +225,11 @@ def get_legal_rule(rule_id: str) -> LegalRule | None:
     return next((rule for rule in load_legal_rules() if rule.rule_id == rule_id), None)
 
 
-def _status_for(measured_value: float | None, verification: Verification) -> RuleCheckStatus:
+def _status_for(measured_value: float | None, comparator: RuleComparator, threshold: float) -> RuleCheckStatus:
     if measured_value is None:
         return RuleCheckStatus.UNKNOWN
-    comparator_fn = _COMPARATOR_FNS[verification.comparator]
-    return RuleCheckStatus.PASS if comparator_fn(measured_value, verification.threshold) else RuleCheckStatus.FAIL
+    comparator_fn = _COMPARATOR_FNS[comparator]
+    return RuleCheckStatus.PASS if comparator_fn(measured_value, threshold) else RuleCheckStatus.FAIL
 
 
 async def _legal_sources_for_concept(concept_id: str) -> list[dict]:
@@ -239,7 +260,11 @@ async def _legal_sources_for_concept(concept_id: str) -> list[dict]:
 def _missing_inputs(rule: LegalRule) -> list[dict]:
     missing = []
 
-    for key in rule.required_inputs:
+    keys = list(rule.required_inputs)
+    if rule.verification.threshold_from_input and rule.verification.threshold_from_input not in keys:
+        keys.append(rule.verification.threshold_from_input)
+
+    for key in keys:
         if resolve_legal_input(key) is not None:
             continue
         definition = get_legal_input_definition(key)
@@ -252,22 +277,43 @@ def _missing_inputs(rule: LegalRule) -> list[dict]:
     return missing
 
 
-async def evaluate_legal_rule(rule: LegalRule) -> dict:
-    base_result = {
-        "rule_id": rule.rule_id,
-        "title": rule.title,
-        "concept_id": rule.concept_id,
-        "threshold": rule.verification.threshold,
-        "threshold_unit": rule.verification.unit,
-        "comparator": rule.verification.comparator.value,
-        "disclaimer": rule.disclaimer,
-    }
+def _resolve_threshold(rule: LegalRule) -> float:
+    """rule.verification.threshold_from_inputが設定されていれば、
+    legal_inputs.pyから解決した値(%表記)を比率に変換して返す。未設定なら
+    静的なverification.thresholdをそのまま返す。呼び出し前にmissing_inputs
+    が空であることを確認済みである必要がある(値の存在は保証されている)。
+    """
+    if not rule.verification.threshold_from_input:
+        return rule.verification.threshold
 
+    raw = resolve_legal_input(rule.verification.threshold_from_input)
+    try:
+        return float(raw) / 100
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{rule.verification.threshold_from_input}の値が数値として解釈できません: "
+            f"{raw!r}(%表記の数値を設定してください、例: 200)"
+        ) from exc
+
+
+async def evaluate_legal_rule(rule: LegalRule) -> dict:
     # BIMデータからは判定できない法規条件(用途地域等)が不足している場合、
     # check関数を呼ばずに「何が足りないか」を返す。UNKNOWN(BIM実測値が
     # 個別要素で欠けている状態)とは異なり、判定そのものが原理的に開始
     # できない状態であることをAIエージェントに明確に伝えるため。
+    # (2026-08-13追加)threshold_from_inputが設定されているルールは、
+    # 閾値自体の不足もmissing_inputsに含める(容積率等)。
     missing_inputs = _missing_inputs(rule)
+
+    base_result = {
+        "rule_id": rule.rule_id,
+        "title": rule.title,
+        "concept_id": rule.concept_id,
+        "threshold": None if missing_inputs else _resolve_threshold(rule),
+        "threshold_unit": rule.verification.unit,
+        "comparator": rule.verification.comparator.value,
+        "disclaimer": rule.disclaimer,
+    }
 
     if missing_inputs:
         return {**base_result, "legal_sources": [], "items": [], "missing_inputs": missing_inputs}
@@ -276,6 +322,7 @@ async def evaluate_legal_rule(rule: LegalRule) -> dict:
     if compute is None:
         raise ValueError(f"未登録のcheckです: {rule.check}(RULE_CHECK_REGISTRYに未登録)")
 
+    threshold = base_result["threshold"]
     measurements = compute()
     legal_sources = tag_evidence(
         await _legal_sources_for_concept(rule.concept_id), EvidenceConfidence.CANDIDATE
@@ -286,7 +333,7 @@ async def evaluate_legal_rule(rule: LegalRule) -> dict:
             {
                 "target_guid": m["target_guid"],
                 "target_name": m.get("target_name"),
-                "status": _status_for(m["measured_value"], rule.verification).value,
+                "status": _status_for(m["measured_value"], rule.verification.comparator, threshold).value,
                 "measured_value": m["measured_value"],
                 "unit": rule.verification.unit,
                 "evidence": m.get("evidence", {}),

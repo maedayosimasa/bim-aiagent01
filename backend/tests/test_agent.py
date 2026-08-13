@@ -339,6 +339,8 @@ def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_
     checks_by_id = {check["rule_id"]: check for check in result["checks"]}
     assert set(checks_by_id) == {
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
+        "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
+        "evacuation_walking_distance",
     }
 
     # sample_elementsのdoor001はproperties.archicad_details.widthを持たないため
@@ -353,6 +355,11 @@ def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_
     effective_daylighting_check = checks_by_id["effective_daylighting_ratio"]
     assert len(effective_daylighting_check["items"]) == 2  # room001, room002
     assert all(item["status"] == "fail" for item in effective_daylighting_check["items"])
+
+    # sample_elementsには敷地境界線Zoneが無いため、容積率は対象0件(判定不能)。
+    assert checks_by_id["floor_area_ratio"]["items"] == []
+    # yoseki_ritsu未設定のため、そもそもmissing_inputsになる。
+    assert checks_by_id["floor_area_ratio"]["missing_inputs"] != []
 
 
 def test_run_legal_report_records_token_usage(monkeypatch, sample_elements):
