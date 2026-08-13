@@ -574,3 +574,96 @@ select:focus {
 .legal-report-status-not_applicable {
   color: var(--text);
 }
+
+.legal-report-status-pass {
+  font-weight: 500;
+}
+
+.legal-report-status-fail {
+  font-weight: 600;
+}
+
+.legal-report-grid {
+  margin-top: 8px;
+  resize: vertical;
+}
+
+/* ag-gridの行全体を淡く色付けし、不合格・不明の行をスクロールせずとも
+   一目で見つけられるようにする(判定列の文字色だけでは一覧性が低いため)。 */
+.legal-report-row-fail {
+  background-color: rgba(192, 57, 43, 0.08) !important;
+}
+
+.legal-report-row-unknown {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+/* AIエージェント(report_graph.pyのgenerate_reportノード)が生成する
+   Markdownレポートの整形。ヘッダー・強調・表(remark-gfm)を持つプレーンな
+   テキストとして届くため、アプリのテーマ配色に合わせて最低限のスタイルを
+   与える。.agent-messageのwhite-space: pre-wrap(チャット用の生テキスト
+   向け)はMarkdownをHTML要素として描画する場合は不要なので打ち消す。 */
+.markdown-body {
+  white-space: normal;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  color: var(--text-h);
+  margin: 18px 0 8px;
+}
+
+.markdown-body h1:first-child,
+.markdown-body h2:first-child,
+.markdown-body h3:first-child {
+  margin-top: 0;
+}
+
+.markdown-body p {
+  margin: 8px 0;
+  line-height: 1.6;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 22px;
+  margin: 8px 0;
+}
+
+.markdown-body strong {
+  color: var(--text-h);
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0 16px;
+  font-size: 13px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  text-align: left;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+}
+
+.markdown-body th {
+  color: var(--text-h);
+  font-weight: 500;
+  background: var(--accent-bg);
+}
+
+.markdown-body code {
+  background: var(--accent-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
