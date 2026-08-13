@@ -19,13 +19,21 @@ agent/graph.py(build_agent)のReActエージェント——会話ループの中
      確定している)。
   3. verify_report(2026-08-13追加、Claim Validatorパターン): generate_report
      が書いた文章中のPASS/FAIL/UNKNOWN件数表記を、ステップ1で確定した実際の
-     件数と突き合わせる。判定結果の再計算・上書きをLLMにさせないよう
-     REPORT_SYSTEM_PROMPTで指示していても、文章化の過程で件数を書き間違える
-     (ハルシネーション)リスクは別に残るため、このステップで機械的に検証する。
-     不一致があれば1回だけ訂正を指示して再生成し、それでも一致しなければ
-     静かに誤った文章のまま返すのではなく、本文に明示的な警告を付記する。
-     件数の記載形式が想定と異なり抽出できなかった場合は「検証不能」として
-     扱い、不一致とはみなさない(過検出よりも見逃しを許容する設計)。
+     件数と突き合わせる(Deterministic Validation、`_validate_report_claims`)。
+     判定結果の再計算・上書きをLLMにさせないようREPORT_SYSTEM_PROMPTで指示
+     していても、文章化の過程で件数を書き間違える(ハルシネーション)リスク
+     は別に残るため、このステップで機械的に検証する。あわせて、レポート
+     本文が言及する条文番号(「第28条」等)が実際に取得したlegal_sourcesに
+     存在するかも検証する(Evidence Validation、`_validate_citations`。
+     2026-08-13追加——legal_sourcesは元々law_id(e-Govの数値ID)とraw_sentence
+     のみで人間可読な条番号を持たず、LLMに条文引用の材料を与えられていな
+     かった。`engine/rule_engine.py`の`_extract_article_label()`/`_law_titles()`
+     でnode_idから条番号を、law_idから法令名を解決し、根拠として提示できる
+     ようにした上でこの検証を追加した)。いずれかで不一致があれば1回だけ
+     訂正を指示して再生成し、それでも一致しなければ静かに誤った文章のまま
+     返すのではなく、本文に明示的な警告を付記する。抽出できなかった場合は
+     「検証不能」として扱い、不一致とはみなさない(過検出よりも見逃しを
+     許容する設計)。
 """
 
 import re
@@ -50,6 +58,11 @@ REPORT_SYSTEM_PROMPT = """\
   必ず明記すること(与えられたdisclaimerの内容を反映する)。
 - 「関連しそうな法令根拠」は正規表現ベースの候補でありノイズを含むため、
   確定的な法的根拠として断定しないこと。
+- 「建築基準法第28条」のような具体的な条文番号を挙げる場合は、必ず与えられた
+  「関連しそうな法令根拠」に含まれる条番号のみを使うこと。関連しそうな
+  法令根拠が無い、またはそこに条番号が含まれない場合、一般知識で条番号を
+  補って挙げてはいけない(条文の存在有無や趣旨には触れてよいが、具体的な
+  条番号は与えられたデータに無ければ書かないこと)。
 - チェック項目ごとに見出しを分け、FAILがある場合は該当箇所を具体的に列挙し、
   UNKNOWNがある場合はその理由(実測値が取得できない等)に触れること。
 - 「未判定」と記されたチェックは、判定に必要な外部の法規条件(用途地域等)が
@@ -124,11 +137,14 @@ def _summarize_for_prompt(checks: list[dict]) -> str:
         if check["legal_sources"]:
             lines.append(
                 f"  関連しそうな法令根拠 {len(check['legal_sources'])}件"
-                "(参考、確定的な根拠ではない):"
+                "(参考、確定的な根拠ではない。ここに無い条番号を一般知識で"
+                "補って挙げてはいけない):"
             )
             for source in check["legal_sources"][:5]:
                 sentence = (source.get("raw_sentence") or "")[:80]
-                lines.append(f"    - {source.get('law_id')}: {sentence}")
+                law_label = source.get("law_title") or source.get("law_id")
+                citation = f"{law_label}{source['article']}" if source.get("article") else law_label
+                lines.append(f"    - {citation}: {sentence}")
 
         lines.append("")
 
@@ -227,8 +243,51 @@ def _validate_report_claims(checks: list[dict], report_text: str) -> list[str]:
     return mismatches
 
 
+_ARTICLE_MENTION_PATTERN = re.compile(r"第(\d+)条(?:の(\d+))?")
+
+
+def _cited_articles(report_text: str) -> set[str]:
+    """レポート本文中の「第◯条」表記を正規化した集合として抽出する。"""
+    cited = set()
+    for m in _ARTICLE_MENTION_PATTERN.finditer(report_text):
+        main, sub = m.group(1), m.group(2)
+        cited.add(f"第{main}条の{sub}" if sub else f"第{main}条")
+    return cited
+
+
+def _validate_citations(checks: list[dict], report_text: str) -> list[str]:
+    """レポート本文が言及する条番号が、実際に取得したlegal_sourcesに含まれる
+    かを確認する(Evidence Validation)。
+
+    engine/rule_engine.pyのlegal_sourcesは正規表現ベースの候補(ノイズを含む)
+    でしかないため、LLMがそこに存在しない条番号を一般知識から書いてしまう
+    (ハルシネーション引用)リスクが別に残る。checks全体のlegal_sourcesの
+    和集合に対して照合する(チェックごとの見出しとの対応付けは行わない、
+    位置ズレで誤検出するより見逃す方を優先する設計は_validate_report_claims
+    と同じ)。
+    """
+    cited = _cited_articles(report_text)
+    if not cited:
+        return []
+
+    known_articles: set[str] = set()
+    for check in checks:
+        for source in check.get("legal_sources", []):
+            if source.get("article"):
+                known_articles.add(source["article"])
+
+    unfounded = sorted(cited - known_articles)
+    return [
+        f"レポート中で言及されている「{article}」は、実際に取得した法令根拠"
+        "(legal_sources)には含まれていません。一般知識に基づく記述の可能性"
+        "があります(ハルシネーション引用の疑い)。"
+        for article in unfounded
+    ]
+
+
 def verify_report(state: LegalReportState) -> dict:
     mismatches = _validate_report_claims(state["checks"], state["report"])
+    mismatches += _validate_citations(state["checks"], state["report"])
     attempts = state.get("verification_attempts", 0) + 1
     return {"verification_mismatches": mismatches, "verification_attempts": attempts}
 

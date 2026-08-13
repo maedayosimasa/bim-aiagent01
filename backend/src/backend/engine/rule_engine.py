@@ -19,11 +19,25 @@ concept_idに紐づく法令Rule(law_id/node_id/raw_sentence/modality/confidence
 Legal Knowledge Builder(別プロセス)が未接続・未起動の場合でも判定自体は
 継続し、legal_sourcesが空になるだけにする(`legal_mcp/client.py`と同じ
 「未接続でもクラッシュしない」方針)。
+
+**(2026-08-13追加)`law_title`/`article`フィールド**: 元々`legal_sources`は
+`law_id`(e-Govの法令ID、例: "325AC0000000201")と`raw_sentence`(条文本文、
+条番号を含まない)のみを持っており、人間が読める条番号がどこにも無かった。
+これは`agent/report_graph.py`のレポート生成LLMに「建築基準法第28条」のような
+具体的な条文引用を書かせる材料が実際には与えられていない(LLMが書けば
+それは取得した根拠ではなく一般知識由来である可能性が高い)ことを意味していた。
+`node_id`(例: "325AC0000000201:Law:MP#1:Ch2:Art28:Para1")には条番号が
+構造化された形で埋め込まれているため`_extract_article_label()`で抽出し、
+`law_id`は`legal_client.list_laws()`(`GET /legal/laws`)で人間可読な法令名に
+解決する。これにより`report_graph.py`のClaim Validator(Evidence Validation、
+`_validate_citations()`)が「レポートが引用した条番号は、実際に取得した
+legal_sourcesに含まれるか」を機械的に検証できるようになった。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -37,6 +51,37 @@ from .evidence import EvidenceConfidence, tag as tag_evidence
 from .legal_inputs import get_legal_input_definition, resolve_legal_input
 
 _RULES_PATH = Path(__file__).parent / "legal_rules.json"
+
+# node_idの例: "325AC0000000201:Law:MP#1:Ch2:Art28:Para1"
+#              "325AC0000000201:Law:Suppl#95:Art1:Para1:Item2"(附則)
+_ARTICLE_PATTERN = re.compile(r"(Suppl#\d+:)?Art(\d+)(?:_(\d+))?")
+
+
+def _extract_article_label(node_id: str | None) -> str | None:
+    """node_idから人間可読な条番号(例: "第28条"/"第1条の3"/"附則第95条")を抽出する。
+
+    パターンに一致しない場合(将来Legal Knowledge Builder側のnode_id形式が
+    変わった場合等)はNoneを返す(過検出よりも見逃しを許容する設計)。
+    """
+    if not node_id:
+        return None
+    m = _ARTICLE_PATTERN.search(node_id)
+    if not m:
+        return None
+    is_suppl, main, sub = m.group(1), m.group(2), m.group(3)
+    label = f"第{main}条の{sub}" if sub else f"第{main}条"
+    return f"附則{label}" if is_suppl else label
+
+
+async def _law_titles() -> dict[str, str]:
+    if not legal_client.is_configured():
+        return {}
+    try:
+        laws = await legal_client.list_laws()
+    except Exception:
+        # Legal Knowledge Builderが未起動・接続エラーでも判定自体は継続する。
+        return {}
+    return {law.get("law_id"): law.get("law_title") for law in laws}
 
 
 class RuleCheckStatus(str, Enum):
@@ -175,11 +220,14 @@ async def _legal_sources_for_concept(concept_id: str) -> list[dict]:
         # Legal Knowledge Builderが未起動・接続エラーでも判定自体は継続する
         # (legal_mcp/client.pyの他の呼び出しと同じ「クラッシュしない」方針)。
         return []
+    law_titles = await _law_titles()
     return [
         {
             "rule_id": rule.get("rule_id"),
             "law_id": rule.get("law_id"),
+            "law_title": law_titles.get(rule.get("law_id")),
             "node_id": rule.get("node_id"),
+            "article": _extract_article_label(rule.get("node_id")),
             "raw_sentence": (rule.get("raw_sentence") or "").strip(),
             "modality": rule.get("modality"),
             "confidence": rule.get("confidence"),

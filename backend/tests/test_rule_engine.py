@@ -61,7 +61,7 @@ def test_legal_sources_for_concept_maps_fields(monkeypatch):
             {
                 "rule_id": "rule:1",
                 "law_id": "325AC0000000201",
-                "node_id": "n1",
+                "node_id": "325AC0000000201:Law:MP#1:Ch2:Art28:Para1",
                 "raw_sentence": "  居室には採光のための窓その他の開口部を設けなければならない。  ",
                 "modality": "obligation",
                 "conditions": [],
@@ -70,7 +70,11 @@ def test_legal_sources_for_concept_maps_fields(monkeypatch):
             }
         ]
 
+    async def fake_list_laws():
+        return [{"law_id": "325AC0000000201", "law_title": "建築基準法"}]
+
     monkeypatch.setattr(legal_client, "get_rules_by_concept", fake_get_rules_by_concept)
+    monkeypatch.setattr(legal_client, "list_laws", fake_list_laws)
 
     sources = asyncio.run(rule_engine._legal_sources_for_concept("daylighting"))
 
@@ -78,12 +82,53 @@ def test_legal_sources_for_concept_maps_fields(monkeypatch):
         {
             "rule_id": "rule:1",
             "law_id": "325AC0000000201",
-            "node_id": "n1",
+            "law_title": "建築基準法",
+            "node_id": "325AC0000000201:Law:MP#1:Ch2:Art28:Para1",
+            "article": "第28条",
             "raw_sentence": "居室には採光のための窓その他の開口部を設けなければならない。",
             "modality": "obligation",
             "confidence": 0.5,
         }
     ]
+
+
+def test_legal_sources_for_concept_law_titles_unavailable_leaves_none(monkeypatch):
+    # list_laws()が失敗しても(接続エラー等)判定自体は継続し、law_titleが
+    # Noneになるだけにする(legal_mcp/client.pyの「未接続でもクラッシュ
+    # しない」方針)。
+    monkeypatch.setenv("LEGAL_API_URL", "http://legal.example.invalid")
+
+    async def fake_get_rules_by_concept(concept_id):
+        return [{
+            "rule_id": "rule:1", "law_id": "325AC0000000201",
+            "node_id": "325AC0000000201:Law:MP#1:Ch2:Art28:Para1",
+            "raw_sentence": "text", "modality": "obligation", "confidence": 0.5,
+        }]
+
+    async def failing_list_laws():
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(legal_client, "get_rules_by_concept", fake_get_rules_by_concept)
+    monkeypatch.setattr(legal_client, "list_laws", failing_list_laws)
+
+    sources = asyncio.run(rule_engine._legal_sources_for_concept("daylighting"))
+
+    assert sources[0]["law_title"] is None
+    assert sources[0]["article"] == "第28条"
+
+
+def test_extract_article_label_handles_various_node_id_shapes():
+    assert rule_engine._extract_article_label(
+        "325AC0000000201:Law:MP#1:Ch2:Art28:Para1"
+    ) == "第28条"
+    assert rule_engine._extract_article_label(
+        "325M50004000040:Law:MP#1:Art1_3:Para1"
+    ) == "第1条の3"
+    assert rule_engine._extract_article_label(
+        "325AC0000000201:Law:Suppl#95:Art1:Para1:Item2"
+    ) == "附則第1条"
+    assert rule_engine._extract_article_label("no-article-here") is None
+    assert rule_engine._extract_article_label(None) is None
 
 
 def test_run_daylighting_check_structures_result(test_db, monkeypatch):

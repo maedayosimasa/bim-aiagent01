@@ -331,7 +331,7 @@ def test_run_legal_report_without_api_key_raises(monkeypatch):
         asyncio.run(agent_service.run_legal_report())
 
 
-def _make_check(rule_id, title, *, pass_count=0, fail_count=0, unknown_count=0):
+def _make_check(rule_id, title, *, pass_count=0, fail_count=0, unknown_count=0, legal_sources=None):
     items = (
         [{"status": "pass", "target_guid": f"p{i}", "target_name": None,
           "measured_value": 1, "unit": None} for i in range(pass_count)]
@@ -347,7 +347,7 @@ def _make_check(rule_id, title, *, pass_count=0, fail_count=0, unknown_count=0):
         "threshold": 0.1,
         "threshold_unit": None,
         "disclaimer": "参考値です。",
-        "legal_sources": [],
+        "legal_sources": legal_sources or [],
         "items": items,
         "missing_inputs": [],
     }
@@ -388,6 +388,59 @@ def test_validate_report_claims_skips_unparseable_text():
     report_text = "採光は概ね良好です。"
 
     assert agent_report_graph._validate_report_claims(checks, report_text) == []
+
+
+def test_validate_citations_accepts_article_present_in_legal_sources():
+    checks = [_make_check(
+        "daylighting_ratio", "採光有効面積比", pass_count=1,
+        legal_sources=[{"law_title": "建築基準法", "article": "第28条", "raw_sentence": "..."}],
+    )]
+    report_text = "建築基準法第28条により、採光を確認しました。"
+
+    assert agent_report_graph._validate_citations(checks, report_text) == []
+
+
+def test_validate_citations_flags_article_not_in_legal_sources():
+    # legal_sourcesに含まれない条番号への言及は、LLMの一般知識由来の
+    # ハルシネーション引用の可能性がある(Evidence Validation)。
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=1, legal_sources=[])]
+    report_text = "建築基準法第28条により、採光を確認しました。"
+
+    mismatches = agent_report_graph._validate_citations(checks, report_text)
+
+    assert len(mismatches) == 1
+    assert "第28条" in mismatches[0]
+
+
+def test_validate_citations_no_mention_is_not_flagged():
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=1, legal_sources=[])]
+    report_text = "採光は概ね良好です。"
+
+    assert agent_report_graph._validate_citations(checks, report_text) == []
+
+
+def test_run_legal_report_appends_warning_for_unfounded_citation(monkeypatch):
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=1, legal_sources=[])]
+    _install_fake_checks(monkeypatch, checks)
+
+    # PASS/FAIL/UNKNOWN件数は正しいが、legal_sourcesに存在しない条番号を
+    # 挙げている(ハルシネーション引用)ケース。
+    report_with_bad_citation = (
+        "■採光有効面積比\n結果: PASS 1件 / FAIL 0件 / UNKNOWN 0件\n"
+        "建築基準法第28条により適合しています。\n総評: 参考値です。"
+    )
+    fake_model = _FakeToolCallingModel(responses=[
+        AIMessage(content=report_with_bad_citation),
+        AIMessage(content=report_with_bad_citation),
+    ])
+    monkeypatch.setattr(agent_report_graph, "ChatAnthropic", lambda model: fake_model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    result = asyncio.run(agent_service.run_legal_report())
+
+    assert fake_model.calls == 2
+    assert "自動検証の警告" in result["report"]
+    assert "第28条" in result["report"]
 
 
 def test_run_legal_report_retries_once_on_mismatch_then_succeeds(monkeypatch):
