@@ -45,6 +45,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from ..legal_mcp import client as legal_client
+from .building_coverage import calculate_building_coverage_ratio
 from .code_engine import check_accessible_door_width, check_daylighting
 from .effective_daylighting import calculate_effective_daylighting
 from .evacuation_engine import compute_evacuation_walking_distances
@@ -213,6 +214,7 @@ RULE_CHECK_REGISTRY: dict[str, Callable[[], list[dict]]] = {
     "floor_area_ratio": calculate_floor_area_ratio,
     "site_road_frontage": calculate_site_road_frontage,
     "evacuation_walking_distance": compute_evacuation_walking_distances,
+    "building_coverage_ratio": calculate_building_coverage_ratio,
 }
 
 

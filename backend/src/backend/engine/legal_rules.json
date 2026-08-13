@@ -62,5 +62,14 @@
     "check": "evacuation_walking_distance",
     "verification": {"comparator": "lte", "threshold": 30.0, "unit": "m"},
     "disclaimer": "参考値です。建築基準法施行令120条の歩行距離制限(構造・用途により30m〜60mと幅がある)のうち、最も厳しい値(30m)を一律の目安として使っています。実際の適用値は建物の耐火構造区分・主要用途・避難階段の配置により異なります。距離はRoom/Zone-Doorのグラフ上の幾何的な隙間の合計であり、部屋内部を実際に歩く経路長そのものではありません。複数階をまたぐ経路(階段の接続)は未対応です。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "building_coverage_ratio",
+    "title": "建蔽率(参考値、建築基準法53条)",
+    "concept_id": "building_coverage_ratio",
+    "applies_when": {"entity_type": "Zone(敷地境界線)"},
+    "check": "building_coverage_ratio",
+    "verification": {"comparator": "lte", "threshold_from_input": "kenpei_ritsu", "unit": "ratio"},
+    "disclaimer": "参考値です。建築面積はBIMモデル上のRoom/Zone面積・壁芯+半厚み・Slab/Roofのオーバーハング(水平距離1m未満の張り出しは施行令2条1項2号により不算入)から幾何的に近似した値であり、実際の測量値・確認申請上の建築面積とは一致しない場合があります。外壁/内壁の区別が無いため全Wallを対象にしており、独立した塀等が誤って含まれる可能性があります。複数棟の敷地では全棟合計になります(棟ごとの分離は未実装)。角地・防火地域等の建蔽率緩和規定は未実装です。法的な適合を保証するものではありません。"
   }
 ]

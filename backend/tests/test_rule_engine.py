@@ -21,7 +21,7 @@ def test_load_legal_rules_returns_known_rules():
     assert set(rules) == {
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
         "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
-        "evacuation_walking_distance",
+        "evacuation_walking_distance", "building_coverage_ratio",
     }
     assert rules["daylighting_ratio"].check == "daylighting_ratio"
     assert rules["daylighting_ratio"].concept_id == "daylighting"
@@ -33,6 +33,7 @@ def test_load_legal_rules_returns_known_rules():
     assert rules["floor_area_ratio"].verification.threshold_from_input == "yoseki_ritsu"
     assert rules["site_road_frontage"].verification.threshold == 2.0
     assert rules["evacuation_walking_distance"].verification.threshold == 30.0
+    assert rules["building_coverage_ratio"].verification.threshold_from_input == "kenpei_ritsu"
 
 
 def test_get_legal_rule_returns_none_for_unknown_id():
@@ -427,3 +428,43 @@ def test_evaluate_ventilation_ratio_via_rule_id(test_db, monkeypatch):
     item = result["items"][0]
     assert item["measured_value"] == pytest.approx(0.06)
     assert item["status"] == "pass"  # 0.06 >= 1/20
+
+
+def test_evaluate_building_coverage_ratio_reports_missing_inputs_when_kenpei_ritsu_unset(test_db, monkeypatch):
+    monkeypatch.delenv("KENPEI_RITSU", raising=False)
+
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[-2000, -2000], [12000, -2000], [12000, 12000], [-2000, 12000]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("building_coverage_ratio"))
+
+    assert result["threshold"] is None
+    assert result["items"] == []
+    assert [m["key"] for m in result["missing_inputs"]] == ["kenpei_ritsu"]
+
+
+def test_evaluate_building_coverage_ratio_resolves_threshold_from_percent_input(test_db, monkeypatch):
+    monkeypatch.setenv("KENPEI_RITSU", "60")
+
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[-2000, -2000], [12000, -2000], [12000, 12000], [-2000, 12000]]}),
+    )
+    test_db.insert_element(
+        "room1", "Room", "居室",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("building_coverage_ratio"))
+
+    assert result["missing_inputs"] == []
+    assert result["threshold"] == pytest.approx(0.6)  # "60"(%) → 0.6(比率)
+    item = result["items"][0]
+    # 建築面積100m^2 / 敷地196m^2 ≈ 0.5102 <= 0.6 → pass
+    assert item["measured_value"] == pytest.approx(100.0 / 196.0)
+    assert item["status"] == "pass"

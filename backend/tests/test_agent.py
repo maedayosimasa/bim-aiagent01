@@ -340,7 +340,7 @@ def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_
     assert set(checks_by_id) == {
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
         "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
-        "evacuation_walking_distance",
+        "evacuation_walking_distance", "building_coverage_ratio",
     }
 
     # sample_elementsのdoor001はproperties.archicad_details.widthを持たないため

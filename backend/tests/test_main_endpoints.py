@@ -132,7 +132,7 @@ def test_engine_legal_rules_endpoint(api_client):
     assert rule_ids == {
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
         "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
-        "evacuation_walking_distance",
+        "evacuation_walking_distance", "building_coverage_ratio",
     }
 
 
