@@ -341,6 +341,8 @@ def test_run_legal_report_runs_checks_then_generates_report(monkeypatch, sample_
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
         "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
         "evacuation_walking_distance", "building_coverage_ratio",
+        "road_slant_compliance", "adjacent_boundary_slant_compliance",
+        "north_slant_compliance", "height_district_compliance",
     }
 
     # sample_elementsのdoor001はproperties.archicad_details.widthを持たないため
@@ -504,7 +506,7 @@ def test_validate_citations_no_mention_is_not_flagged():
     assert agent_report_graph._validate_citations(checks, report_text) == []
 
 
-def test_run_legal_report_appends_warning_for_unfounded_citation(monkeypatch):
+def test_run_legal_report_appends_warning_for_unfounded_citation(monkeypatch, test_db):
     checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=1, legal_sources=[])]
     _install_fake_checks(monkeypatch, checks)
 
@@ -528,7 +530,7 @@ def test_run_legal_report_appends_warning_for_unfounded_citation(monkeypatch):
     assert "第28条" in result["report"]
 
 
-def test_run_legal_report_retries_once_on_mismatch_then_succeeds(monkeypatch):
+def test_run_legal_report_retries_once_on_mismatch_then_succeeds(monkeypatch, test_db):
     checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=2, fail_count=1)]
     _install_fake_checks(monkeypatch, checks)
 
@@ -548,7 +550,7 @@ def test_run_legal_report_retries_once_on_mismatch_then_succeeds(monkeypatch):
     assert "自動検証の警告" not in result["report"]
 
 
-def test_run_legal_report_appends_warning_when_mismatch_persists(monkeypatch):
+def test_run_legal_report_appends_warning_when_mismatch_persists(monkeypatch, test_db):
     checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=2, fail_count=1)]
     _install_fake_checks(monkeypatch, checks)
 
@@ -565,3 +567,5 @@ def test_run_legal_report_appends_warning_when_mismatch_persists(monkeypatch):
     assert fake_model.calls == 2
     assert "自動検証の警告" in result["report"]
     assert result["report"].startswith(wrong_report)
+
+

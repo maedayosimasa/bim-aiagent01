@@ -45,13 +45,17 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from ..legal_mcp import client as legal_client
+from .adjacent_boundary_slant_envelope import calculate_adjacent_boundary_slant_compliance
 from .building_coverage import calculate_building_coverage_ratio
 from .code_engine import check_accessible_door_width, check_daylighting
 from .effective_daylighting import calculate_effective_daylighting
 from .evacuation_engine import compute_evacuation_walking_distances
 from .evidence import EvidenceConfidence, tag as tag_evidence
 from .floor_area_ratio import calculate_floor_area_ratio
+from .height_district_envelope import calculate_height_district_compliance
 from .legal_inputs import get_legal_input_definition, resolve_legal_input
+from .north_slant_envelope import calculate_north_slant_compliance
+from .road_slant_envelope import calculate_road_slant_compliance
 from .site_frontage import calculate_site_road_frontage
 
 _RULES_PATH = Path(__file__).parent / "legal_rules.json"
@@ -215,6 +219,15 @@ RULE_CHECK_REGISTRY: dict[str, Callable[[], list[dict]]] = {
     "site_road_frontage": calculate_site_road_frontage,
     "evacuation_walking_distance": compute_evacuation_walking_distances,
     "building_coverage_ratio": calculate_building_coverage_ratio,
+    # (2026-08-14追加)高さ制限4種。各calculate_*_compliance()は測定値として
+    # 「実際の建物高さ - その位置での高さ上限」(m)を返す(threshold=0.0、
+    # comparator="lte"と組み合わせ、0以下ならPASS)。戻り値の形状
+    # (target_guid/target_name/measured_value/evidence)は他のcheck関数と
+    # 完全に一致するため、追加のラッパーは不要。
+    "road_slant_compliance": calculate_road_slant_compliance,
+    "adjacent_boundary_slant_compliance": calculate_adjacent_boundary_slant_compliance,
+    "north_slant_compliance": calculate_north_slant_compliance,
+    "height_district_compliance": calculate_height_district_compliance,
 }
 
 

@@ -71,5 +71,41 @@
     "check": "building_coverage_ratio",
     "verification": {"comparator": "lte", "threshold_from_input": "kenpei_ritsu", "unit": "ratio"},
     "disclaimer": "参考値です。建築面積はBIMモデル上のRoom/Zone面積・壁芯+半厚み・Slab/Roofのオーバーハング(水平距離1m未満の張り出しは施行令2条1項2号により不算入)から幾何的に近似した値であり、実際の測量値・確認申請上の建築面積とは一致しない場合があります。外壁/内壁の区別が無いため全Wallを対象にしており、独立した塀等が誤って含まれる可能性があります。複数棟の敷地では全棟合計になります(棟ごとの分離は未実装)。角地・防火地域等の建蔽率緩和規定は未実装です。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "road_slant_compliance",
+    "title": "道路斜線制限(参考値、建築基準法56条1項1号)",
+    "concept_id": "road_slant",
+    "applies_when": {"entity_type": "Zone(敷地境界線)"},
+    "check": "road_slant_compliance",
+    "verification": {"comparator": "lte", "threshold": 0.0, "unit": "m"},
+    "disclaimer": "参考値です。実測値は敷地内の建物要素(Wall/Slab/Roof/Column)のうち、道路斜線制限のenvelope(敷地境界線の各頂点から前面道路の反対側の境界線までの水平距離×用途地域ごとの勾配、適用距離一律20m)を最も超過している箇所の超過高さ(m)です。0以下ならPASS(超過なし)。地盤面(グレードレベル)を明示的に記録する仕組みが無いため、敷地Zoneの座標系z=0を地盤面とみなす簡略化です。用途地域はengine/legal_inputs.py(敷地ZoneのArchicadカスタムProperty「用途地域」または環境変数LAND_USE_CATEGORY)から解決します。セットバック緩和・2以上の道路がある場合の緩和・天空率による代替緩和は未実装です。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "adjacent_boundary_slant_compliance",
+    "title": "隣地斜線制限(参考値、建築基準法56条1項2号)",
+    "concept_id": "adjacent_boundary_slant",
+    "applies_when": {"entity_type": "Zone(敷地境界線)"},
+    "check": "adjacent_boundary_slant_compliance",
+    "verification": {"comparator": "lte", "threshold": 0.0, "unit": "m"},
+    "disclaimer": "参考値です。実測値は敷地内の建物要素(Wall/Slab/Roof/Column)のうち、隣地斜線制限のenvelope(敷地境界線のうち前面道路に接しない辺までの水平距離×用途地域ごとの勾配+立ち上がり高さ)を最も超過している箇所の超過高さ(m)です。0以下ならPASS(超過なし)。地盤面を明示的に記録する仕組みが無いため、敷地Zoneの座標系z=0を地盤面とみなす簡略化です。用途地域はengine/legal_inputs.pyから解決します。天空率による代替緩和・2以上の道路がある場合の緩和は未実装です。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "north_slant_compliance",
+    "title": "北側斜線制限(参考値、建築基準法56条1項3号)",
+    "concept_id": "north_slant",
+    "applies_when": {"entity_type": "Zone(敷地境界線)"},
+    "check": "north_slant_compliance",
+    "verification": {"comparator": "lte", "threshold": 0.0, "unit": "m"},
+    "disclaimer": "参考値です。実測値は敷地内の建物要素(Wall/Slab/Roof/Column)のうち、北側斜線制限のenvelope(敷地最北端からの真北方向水平距離×勾配1.25+立ち上がり高さ)を最も超過している箇所の超過高さ(m)です。0以下ならPASS(超過なし)。第一種/第二種低層住居専用地域・田園住居地域・第一種/第二種中高層住居専用地域にのみ適用され、それ以外は対象外です(engine/legal_inputs.pyのkitagawa_shasen_kubun、またはland_use_categoryの正式な用途地域名から自動判定)。真北方向(north_degrees)は環境変数NORTH_DEGREESで明示的に指定する必要があります(Archicadからの都度取得はこの判定では行いません)。地盤面を明示的に記録する仕組みが無いため、敷地Zoneの座標系z=0を地盤面とみなす簡略化です。真北の角度の向き(時計回り/反時計回り)は未検証の前提です。法的な適合を保証するものではありません。"
+  },
+  {
+    "rule_id": "height_district_compliance",
+    "title": "高度地区(参考値、都市計画法8条1項3号)",
+    "concept_id": "height_district",
+    "applies_when": {"entity_type": "Zone(敷地境界線)"},
+    "check": "height_district_compliance",
+    "verification": {"comparator": "lte", "threshold": 0.0, "unit": "m"},
+    "disclaimer": "参考値です。高度地区は自治体条例が個別に内容を定める地域地区で、全国一律の計算式はありません。実測値は敷地内の建物要素(Wall/Slab/Roof/Column)のうち、engine/legal_inputs.pyで明示的に指定した区分・数値(kodo_chiku_kubun=flat時は絶対高さ上限、north_slant時は立ち上がり・勾配・真北方向・任意の頭打ち上限)によるenvelopeを最も超過している箇所の超過高さ(m)です。0以下ならPASS(超過なし)。kodo_chiku_kubun未指定・対象外の場合はUNKNOWNになります。真北方向(north_degrees)は環境変数NORTH_DEGREESで明示的に指定する必要があります(north_slant区分の場合のみ)。地盤面を明示的に記録する仕組みが無いため、敷地Zoneの座標系z=0を地盤面とみなす簡略化です。最低限度(最低高さ)は未実装です。法的な適合を保証するものではありません。"
   }
 ]

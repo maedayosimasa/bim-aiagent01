@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from backend.engine import legal_inputs
 
 
@@ -86,9 +88,17 @@ def test_resolve_legal_input_strips_meter_suffix_from_archicad_property(test_db)
 def test_resolve_legal_input_ignores_unregistered_keys(test_db):
     # ARCHICAD_LEGAL_PROPERTY_KEYWORDSに未登録のkeyは敷地Zoneを検索せず、
     # 常に環境変数のみで解決する。
-    _insert_site_with_legal_conditions(test_db, {"用途地域": "commercial"})
+    _insert_site_with_legal_conditions(test_db, {"接道長さ": "5.0"})
 
-    assert legal_inputs.resolve_legal_input("land_use_category") is None
+    assert legal_inputs.resolve_legal_input("setsudo_nagasa") is None
+
+
+def test_resolve_legal_input_reads_land_use_category_from_site_property(test_db):
+    # (2026-08-14追加)land_use_categoryもkenpei_ritsu等と同様、敷地Zoneの
+    # 「用途地域」プロパティから解決できる。
+    _insert_site_with_legal_conditions(test_db, {"用途地域": "第一種住居地域"})
+
+    assert legal_inputs.resolve_legal_input("land_use_category") == "第一種住居地域"
 
 
 def test_resolve_legal_input_none_when_no_site_zone_or_property(test_db, monkeypatch):
@@ -100,3 +110,47 @@ def test_resolve_legal_input_none_when_no_site_zone_or_property(test_db, monkeyp
     )
 
     assert legal_inputs.resolve_legal_input("kenpei_ritsu") is None
+
+
+def test_normalize_land_use_category_passes_through_coarse_categories():
+    assert legal_inputs.normalize_land_use_category("residential") == ("residential", "not_applicable")
+    assert legal_inputs.normalize_land_use_category("industrial") == ("industrial", "not_applicable")
+    assert legal_inputs.normalize_land_use_category("commercial") == ("commercial", "not_applicable")
+
+
+def test_normalize_land_use_category_maps_official_zone_names():
+    assert legal_inputs.normalize_land_use_category("第一種低層住居専用地域") == ("residential", "low_rise")
+    assert legal_inputs.normalize_land_use_category("第二種中高層住居専用地域") == ("residential", "mid_rise")
+    assert legal_inputs.normalize_land_use_category("第一種住居地域") == ("residential", "not_applicable")
+    assert legal_inputs.normalize_land_use_category("準工業地域") == ("industrial", "not_applicable")
+    assert legal_inputs.normalize_land_use_category("商業地域") == ("commercial", "not_applicable")
+
+
+def test_normalize_land_use_category_raises_for_unknown_value():
+    with pytest.raises(ValueError):
+        legal_inputs.normalize_land_use_category("よくわからない地域")
+
+
+def test_resolve_legal_input_treats_placeholder_property_value_as_unset(test_db):
+    # (2026-08-14実データで発覚)Archicadのピックリスト型プロパティは未選択
+    # 時に「未設定」という文字列を値として返すことがあり、これを実際の値
+    # として扱うとnormalize_land_use_category()等が誤動作する。
+    _insert_site_with_legal_conditions(test_db, {"用途地域": "未設定"})
+
+    assert legal_inputs.resolve_legal_input("land_use_category") is None
+
+
+def test_resolve_legal_input_skips_placeholder_and_finds_next_match(test_db):
+    # 1件目の敷地要素が「未設定」でも、他の要素に実際の値があれば拾う。
+    test_db.insert_element(
+        "site1", "Zone", "敷地A",
+        json.dumps({"legal_conditions": {"用途地域": "未設定"}}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    test_db.insert_element(
+        "site2", "Zone", "敷地B",
+        json.dumps({"legal_conditions": {"用途地域": "第一種住居地域"}}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    assert legal_inputs.resolve_legal_input("land_use_category") == "第一種住居地域"

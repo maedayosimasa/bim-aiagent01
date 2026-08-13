@@ -25,10 +25,20 @@ height_restriction_write.py参照)。
     屈曲している場合は不正確になりうる。
   - 複数の道路Zoneがある場合、各頂点についてそれぞれの道路までの距離の
     うち最小値(=最も厳しい制限)を採用する。
+
+**(2026-08-14追加)`calculate_road_slant_compliance()`**: 上記envelope計算と
+実際の建物高さ(engine/building_height.py、Wall/Slab/Roof/Columnのz_max)を
+比較し、PASS/FAIL判定用の実測値(超過高さ、m)を返す。敷地境界線Zoneの
+外周ポリゴン内にある建物要素のうち、その位置での高さ上限を最も超過している
+1件を代表値として採用する(floor_area_ratio等と同じsite単位1項目の粒度)。
+地盤面(グレードレベル)を明示的に記録する仕組みが無いため、他のenvelope
+計算・effective_daylighting.pyのH計算と同じ「敷地Zoneの座標系z=0=地盤面」
+という簡略化を踏襲する。
 """
 
 from shapely.geometry import LineString, Point, Polygon
 
+from .building_height import building_height_points
 from .effective_daylighting import get_land_use_category
 from .site import get_road_boundaries, get_site_boundary
 
@@ -79,6 +89,16 @@ def _far_edge_line(road_polygon: Polygon, reference_point: Point) -> LineString:
     return max(long_edges, key=lambda edge: edge.distance(reference_point))
 
 
+def _height_limit_m(point: Point, far_edges: list[LineString], gradient: float) -> float:
+    """道路斜線制限による、pointの直上に許容される高さ上限(m)を返す。
+
+    calculate_road_slant_envelope()の頂点ループと
+    calculate_road_slant_compliance()の両方から使う共通ロジック。
+    """
+    distance_m = min(edge.distance(point) for edge in far_edges) / _MM_PER_M
+    return min(gradient * distance_m, gradient * _APPLICABLE_DISTANCE_M)
+
+
 def calculate_road_slant_envelope(land_use_category: str | None = None) -> list[dict]:
     """敷地(敷地境界線Zone)ごとに、道路斜線制限のenvelope頂点群を返す。
 
@@ -121,9 +141,7 @@ def calculate_road_slant_envelope(land_use_category: str | None = None) -> list[
 
         vertices = []
         for x, y in site_polygon.exterior.coords[:-1]:
-            point = Point(x, y)
-            distance_m = min(edge.distance(point) for edge in far_edges) / _MM_PER_M
-            height_m = min(gradient * distance_m, gradient * _APPLICABLE_DISTANCE_M)
+            height_m = _height_limit_m(Point(x, y), far_edges, gradient)
             vertices.append({"x": x, "y": y, "z_m": height_m})
 
         results.append({
@@ -134,6 +152,85 @@ def calculate_road_slant_envelope(land_use_category: str | None = None) -> list[
             "gradient": gradient,
             "applicable_distance_m": _APPLICABLE_DISTANCE_M,
             "vertices": vertices,
+        })
+
+    return results
+
+
+def calculate_road_slant_compliance(land_use_category: str | None = None) -> list[dict]:
+    """敷地(敷地境界線Zone)ごとに、道路斜線制限envelopeと実際の建物高さ
+    (Wall/Slab/Roof/Column、engine/building_height.py)を比較したPASS/FAIL用
+    実測値を返す。
+
+    敷地の外周ポリゴン内にある建物要素のうち、その位置での高さ上限を最も
+    超過している要素(excess_height_m = 実測高さ - その位置での高さ上限)を
+    site単位の1件として返す(floor_area_ratio/building_coverage_ratioと
+    同じ「site単位1項目」の粒度)。excess_height_mが0以下ならその敷地内の
+    全建物要素が道路斜線制限の範囲内(PASS)、0を超えていれば少なくとも
+    1箇所で超過(FAIL)。rule_engine.pyのVerification(comparator="lte",
+    threshold=0)と組み合わせて使う。
+
+    前面道路Zoneが無い、または敷地内に高さ情報を持つ建物要素が無い場合は
+    measured_value=None(UNKNOWN)を返す。
+    """
+    land_use_category = land_use_category or get_land_use_category()
+
+    if land_use_category not in _GRADIENTS:
+        raise ValueError(
+            f"未知の用途地域カテゴリです: {land_use_category}"
+            f"(residential/industrial/commercialのいずれかを指定してください)"
+        )
+
+    gradient = _GRADIENTS[land_use_category]
+
+    site_zones = get_site_boundary()
+    road_zones = get_road_boundaries()
+    all_points = building_height_points()
+
+    results = []
+    for site in site_zones:
+        site_polygon = Polygon(site["points"])
+        points_in_site = [
+            p for p in all_points if site_polygon.contains(Point(p["x"], p["y"]))
+        ]
+
+        if not road_zones or not points_in_site:
+            results.append({
+                "target_guid": site["guid"],
+                "target_name": site["name"],
+                "measured_value": None,
+                "evidence": {
+                    "reason": (
+                        "前面道路Zoneが無い、または敷地内に高さ情報を持つ"
+                        "建物要素(Wall/Slab/Roof/Column)がありません。"
+                    ),
+                },
+            })
+            continue
+
+        far_edges = [
+            _far_edge_line(Polygon(road["points"]), site_polygon.centroid)
+            for road in road_zones
+        ]
+
+        worst_point = max(
+            points_in_site,
+            key=lambda p: p["height_m"] - _height_limit_m(Point(p["x"], p["y"]), far_edges, gradient),
+        )
+        limit_m = _height_limit_m(Point(worst_point["x"], worst_point["y"]), far_edges, gradient)
+        excess_m = worst_point["height_m"] - limit_m
+
+        results.append({
+            "target_guid": site["guid"],
+            "target_name": site["name"],
+            "measured_value": excess_m,
+            "evidence": {
+                "land_use_category": land_use_category,
+                "worst_element_guid": worst_point["guid"],
+                "worst_element_name": worst_point["name"],
+                "worst_element_height_m": worst_point["height_m"],
+                "height_limit_m_at_worst_element": limit_m,
+            },
         })
 
     return results

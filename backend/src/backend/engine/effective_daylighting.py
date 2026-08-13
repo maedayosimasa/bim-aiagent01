@@ -66,7 +66,6 @@ D(水平距離)・H(垂直距離)は以下のように幾何的に求める:
 """
 
 import json
-import os
 
 from shapely.geometry import LineString, Point, Polygon
 
@@ -77,6 +76,7 @@ from ..graph.room import find_rooms
 from ..graph.topology import build_topology
 from ..database.db import get_elements
 from .code_engine import _node_archicad_details, _window_area_m2
+from .legal_inputs import normalize_land_use_category, resolve_legal_input
 from .relation_builder import rebuild_connections
 from .room_engine import _room_area_m2
 from .site import get_road_boundaries, get_site_boundary
@@ -93,12 +93,19 @@ _LAND_USE_COEFFICIENTS = {
 
 
 def get_land_use_category() -> str:
-    """環境変数LAND_USE_CATEGORYから用途地域カテゴリを取得する(既定residential)。
+    """用途地域カテゴリ(residential/industrial/commercial)を取得する(既定residential)。
 
     実際の用途地域はBIMデータのどこにも記録されていない外部の都市計画情報
-    のため、機械的に推測せずユーザーに明示的に指定してもらう。
+    のため、機械的に推測せずユーザーに明示的に指定してもらう。値は
+    legal_inputs.resolve_legal_input("land_use_category")で解決する
+    ((1)敷地ZoneのArchicadカスタムProperty「用途地域」、(2)環境変数
+    LAND_USE_CATEGORYの順)。値が正式な用途地域名(例:「第一種住居地域」)
+    の場合はnormalize_land_use_category()が3分類へ変換する
+    (2026-08-14追加、以前は環境変数のみを直接読んでいた)。
     """
-    return os.environ.get("LAND_USE_CATEGORY", "residential")
+    raw = resolve_legal_input("land_use_category") or "residential"
+    category, _kubun = normalize_land_use_category(raw)
+    return category
 
 
 def _daylighting_coefficient(ratio: float, land_use_category: str) -> float:

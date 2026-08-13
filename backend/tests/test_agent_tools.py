@@ -136,7 +136,7 @@ def test_engine_windows_tool_classifies_by_adjacent_room_count(test_db):
     assert result["windows"][0]["classification"] == "exterior"
 
 
-def test_engine_legal_inputs_tool_lists_definitions_with_used_by(monkeypatch):
+def test_engine_legal_inputs_tool_lists_definitions_with_used_by(test_db, monkeypatch):
     monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
 
     result = json.loads(agent_tools.engine_legal_inputs_tool.invoke({}))

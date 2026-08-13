@@ -2,7 +2,10 @@ import json
 
 import pytest
 
-from backend.engine.road_slant_envelope import calculate_road_slant_envelope
+from backend.engine.road_slant_envelope import (
+    calculate_road_slant_compliance,
+    calculate_road_slant_envelope,
+)
 
 
 def _insert_site_and_road(test_db, site_points, road_points):
@@ -15,6 +18,14 @@ def _insert_site_and_road(test_db, site_points, road_points):
         "road1", "Zone", "前面道路",
         json.dumps({}),
         json.dumps({"type": "polygon", "points": road_points}),
+    )
+
+
+def _insert_wall(test_db, guid, points, z_max, z_min=0):
+    test_db.insert_element(
+        guid, "Wall", guid,
+        json.dumps({}),
+        json.dumps({"type": "line", "points": points, "z_min": z_min, "z_max": z_max}),
     )
 
 
@@ -108,3 +119,79 @@ def test_calculate_road_slant_envelope_raises_for_unknown_land_use_category(test
 
     with pytest.raises(ValueError):
         calculate_road_slant_envelope("unknown_category")
+
+
+def test_calculate_road_slant_compliance_passes_when_within_limit(test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    _insert_site_and_road(
+        test_db,
+        site_points=[[0, 0], [10000, 0], [10000, 10000], [0, 10000]],
+        road_points=[[-1000, -4000], [11000, -4000], [11000, 0], [-1000, 0]],
+    )
+    # (150, 1000)での高さ上限 = 1.25 * (1000+4000)/1000 = 6.25m。5.0mは範囲内。
+    _insert_wall(test_db, "wall1", [[100, 1000], [200, 1000]], z_max=5000)
+
+    result = calculate_road_slant_compliance()
+
+    assert len(result) == 1
+    assert result[0]["measured_value"] == pytest.approx(5.0 - 6.25)
+    assert result[0]["measured_value"] <= 0
+
+
+def test_calculate_road_slant_compliance_fails_when_exceeding_limit(test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    _insert_site_and_road(
+        test_db,
+        site_points=[[0, 0], [10000, 0], [10000, 10000], [0, 10000]],
+        road_points=[[-1000, -4000], [11000, -4000], [11000, 0], [-1000, 0]],
+    )
+    # 高さ上限6.25mに対し、8.0mは超過。
+    _insert_wall(test_db, "wall1", [[100, 1000], [200, 1000]], z_max=8000)
+
+    result = calculate_road_slant_compliance()
+
+    assert result[0]["measured_value"] == pytest.approx(8.0 - 6.25)
+    assert result[0]["measured_value"] > 0
+    assert result[0]["evidence"]["worst_element_guid"] == "wall1"
+
+
+def test_calculate_road_slant_compliance_unknown_when_no_building_elements(test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    _insert_site_and_road(
+        test_db,
+        site_points=[[0, 0], [10000, 0], [10000, 10000], [0, 10000]],
+        road_points=[[-1000, -4000], [11000, -4000], [11000, 0], [-1000, 0]],
+    )
+
+    result = calculate_road_slant_compliance()
+
+    assert result[0]["measured_value"] is None
+
+
+def test_calculate_road_slant_compliance_unknown_when_no_road(test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    _insert_wall(test_db, "wall1", [[100, 1000], [200, 1000]], z_max=5000)
+
+    result = calculate_road_slant_compliance()
+
+    assert result[0]["measured_value"] is None
+
+
+def test_calculate_road_slant_compliance_ignores_elements_outside_site(test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    _insert_site_and_road(
+        test_db,
+        site_points=[[0, 0], [10000, 0], [10000, 10000], [0, 10000]],
+        road_points=[[-1000, -4000], [11000, -4000], [11000, 0], [-1000, 0]],
+    )
+    # 敷地の外(x=20000)にある壁は判定対象に含めない。
+    _insert_wall(test_db, "wall_outside", [[20100, 1000], [20200, 1000]], z_max=100000)
+
+    result = calculate_road_slant_compliance()
+
+    assert result[0]["measured_value"] is None

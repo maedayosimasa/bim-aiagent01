@@ -67,12 +67,35 @@ def test_daylighting_coefficient_caps_and_floors():
     assert _daylighting_coefficient(0.5, "residential") == pytest.approx(0.5 * 6.0 - 1.4)
 
 
-def test_get_land_use_category_defaults_to_residential(monkeypatch):
+def test_get_land_use_category_defaults_to_residential(test_db, monkeypatch):
     monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
     assert get_land_use_category() == "residential"
 
     monkeypatch.setenv("LAND_USE_CATEGORY", "commercial")
     assert get_land_use_category() == "commercial"
+
+
+def test_get_land_use_category_normalizes_official_zone_name_from_env_var(test_db, monkeypatch):
+    # (2026-08-14追加)get_land_use_category()はresolve_legal_input()経由に
+    # なり、正式な用途地域名(env var経由でも)を3分類へ変換できる。
+    monkeypatch.setenv("LAND_USE_CATEGORY", "第一種住居地域")
+    assert get_land_use_category() == "residential"
+
+
+def test_get_land_use_category_falls_back_to_default_for_unset_placeholder(test_db, monkeypatch):
+    # (2026-08-14実データで発覚した500エラーの回帰テスト)Archicadのピック
+    # リストプロパティが未選択のまま同期されると値は「未設定」になり、
+    # 以前はnormalize_land_use_category()がValueErrorを送出して法規レポート
+    # 生成全体が500エラーになっていた。未設定と同じ扱いになり既定値
+    # (residential)へフォールバックすることを確認する。
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({"legal_conditions": {"用途地域": "未設定"}}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    assert get_land_use_category() == "residential"
 
 
 def test_calculate_effective_daylighting_resolves_d_and_h(test_db):

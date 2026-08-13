@@ -13,6 +13,20 @@ agent/graph.py(build_agent)のReActエージェント——会話ループの中
      (legal_sources)はevaluate_legal_rule()自体が行う(Legal Knowledge
      Builder接続時のみ、未接続でも空リストになるだけで判定は継続する)。
      この段階はLLMを一切呼ばない、決定的な計算のみ。
+
+     (2026-08-14追加)高さ制限(道路斜線制限・隣地斜線制限・北側斜線制限・
+     高度地区)も、他の法規チェックと同じくlegal_rules.json+RULE_CHECK_
+     REGISTRYのエントリ(rule_id: road_slant_compliance/adjacent_boundary_
+     slant_compliance/north_slant_compliance/height_district_compliance)
+     として登録されており、このrun_checksが他のチェックと全く同じ経路で
+     PASS/FAIL/UNKNOWN判定する。詳細はengine/road_slant_envelope.py等の
+     `calculate_*_compliance()`のdocstring参照(実際のBIM建物高さ実測値
+     (engine/building_height.py)とenvelope上限を比較する)。当初(同日、別
+     セッション内)はrun_checksとは別枠の`run_envelopes`ノードとして高さ
+     範囲のみを表示していたが、ユーザーから「BIM空間知能エンジンで取得
+     したデータから合否を表示するように」という指示を受け、既存のRule
+     Engineの枠組みに正しく統合する形に書き直した(専用ノード・専用state
+     フィールドは廃止)。
   2. generate_report: 判定結果一覧を要約したテキストをLLM(Claude)に渡し、
      日本語のレポート文を生成する。LLMには数値の再計算・判定の上書きを
      させず、要約・文章化のみを担当させる(判定結果自体は既にステップ1で

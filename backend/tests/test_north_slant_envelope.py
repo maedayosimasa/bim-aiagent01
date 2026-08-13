@@ -2,7 +2,10 @@ import json
 
 import pytest
 
-from backend.engine.north_slant_envelope import calculate_north_slant_envelope
+from backend.engine.north_slant_envelope import (
+    calculate_north_slant_compliance,
+    calculate_north_slant_envelope,
+)
 
 
 def _insert_site(test_db):
@@ -10,6 +13,14 @@ def _insert_site(test_db):
         "site1", "Zone", "敷地",
         json.dumps({}),
         json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+
+def _insert_wall(test_db, guid, points, z_max, z_min=0):
+    test_db.insert_element(
+        guid, "Wall", guid,
+        json.dumps({}),
+        json.dumps({"type": "line", "points": points, "z_min": z_min, "z_max": z_max}),
     )
 
 
@@ -83,3 +94,87 @@ def test_calculate_north_slant_envelope_reads_kubun_from_env_var(test_db, monkey
 
 def test_calculate_north_slant_envelope_empty_when_no_site(test_db):
     assert calculate_north_slant_envelope(north_degrees=0, kitagawa_shasen_kubun="low_rise") == []
+
+
+def test_calculate_north_slant_envelope_derives_kubun_from_land_use_category(test_db, monkeypatch):
+    # (2026-08-14追加)kitagawa_shasen_kubun未設定でも、land_use_categoryに
+    # 正式な用途地域名が設定されていれば自動導出される
+    # (get_kitagawa_shasen_kubun())。
+    monkeypatch.delenv("KITAGAWA_SHASEN_KUBUN", raising=False)
+    monkeypatch.setenv("LAND_USE_CATEGORY", "第一種低層住居専用地域")
+    _insert_site(test_db)
+
+    result = calculate_north_slant_envelope(north_degrees=0)
+
+    assert result[0]["resolved"] is True
+    assert result[0]["rise_height_m"] == 5.0
+
+
+def test_calculate_north_slant_envelope_stays_unresolved_for_coarse_land_use_category(test_db, monkeypatch):
+    # 粗い3分類("residential"等)のみでは低層/中高層の区別が付かないため、
+    # 自動導出されない(not_applicable扱い、推測しない)。
+    monkeypatch.delenv("KITAGAWA_SHASEN_KUBUN", raising=False)
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    _insert_site(test_db)
+
+    result = calculate_north_slant_envelope(north_degrees=0)
+
+    assert result[0]["resolved"] is False
+
+
+def test_calculate_north_slant_compliance_passes_when_within_limit(test_db):
+    _insert_site(test_db)
+    # 最北端(y=10000)から5m南(y=5000)での高さ上限 = 5 + 1.25*5 = 11.25m。
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=10000)
+
+    result = calculate_north_slant_compliance(north_degrees=0, kitagawa_shasen_kubun="low_rise")
+
+    assert result[0]["measured_value"] == pytest.approx(10.0 - 11.25)
+    assert result[0]["measured_value"] <= 0
+
+
+def test_calculate_north_slant_compliance_fails_when_exceeding_limit(test_db):
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=15000)
+
+    result = calculate_north_slant_compliance(north_degrees=0, kitagawa_shasen_kubun="low_rise")
+
+    assert result[0]["measured_value"] == pytest.approx(15.0 - 11.25)
+    assert result[0]["measured_value"] > 0
+
+
+def test_calculate_north_slant_compliance_unknown_when_not_applicable(test_db):
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=10000)
+
+    result = calculate_north_slant_compliance(north_degrees=0, kitagawa_shasen_kubun="not_applicable")
+
+    assert result[0]["measured_value"] is None
+
+
+def test_calculate_north_slant_compliance_unknown_when_north_degrees_missing(test_db, monkeypatch):
+    monkeypatch.delenv("NORTH_DEGREES", raising=False)
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=10000)
+
+    result = calculate_north_slant_compliance(kitagawa_shasen_kubun="low_rise")
+
+    assert result[0]["measured_value"] is None
+
+
+def test_calculate_north_slant_compliance_reads_north_degrees_from_env_var(test_db, monkeypatch):
+    monkeypatch.setenv("NORTH_DEGREES", "0")
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=10000)
+
+    result = calculate_north_slant_compliance(kitagawa_shasen_kubun="low_rise")
+
+    assert result[0]["measured_value"] == pytest.approx(10.0 - 11.25)
+
+
+def test_calculate_north_slant_compliance_unknown_when_no_building_elements(test_db):
+    _insert_site(test_db)
+
+    result = calculate_north_slant_compliance(north_degrees=0, kitagawa_shasen_kubun="low_rise")
+
+    assert result[0]["measured_value"] is None

@@ -22,6 +22,8 @@ def test_load_legal_rules_returns_known_rules():
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
         "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
         "evacuation_walking_distance", "building_coverage_ratio",
+        "road_slant_compliance", "adjacent_boundary_slant_compliance",
+        "north_slant_compliance", "height_district_compliance",
     }
     assert rules["daylighting_ratio"].check == "daylighting_ratio"
     assert rules["daylighting_ratio"].concept_id == "daylighting"
@@ -224,6 +226,39 @@ def test_evaluate_effective_daylighting_ratio_reports_missing_inputs(test_db, mo
 
     assert result["items"] == []
     assert result["legal_sources"] == []
+    assert result["missing_inputs"] == [
+        {
+            "key": "land_use_category",
+            "label": "用途地域",
+            "description": rule_engine.get_legal_input_definition("land_use_category").description,
+        }
+    ]
+
+
+def test_evaluate_effective_daylighting_ratio_treats_unset_property_placeholder_as_missing(test_db, monkeypatch):
+    # (2026-08-14実データで発覚した500エラーの回帰テスト)敷地Zoneの
+    # 「用途地域」プロパティがArchicadのピックリスト未選択時の値「未設定」
+    # のまま同期されると、以前はこれを実際の用途地域名として解釈しようと
+    # してValueErrorを送出し、法規レポート生成全体が500エラーになっていた。
+    # 「未設定」はresolve_legal_input()がNone扱いにするため、他の未設定
+    # ケースと同じくmissing_inputsとして報告される(クラッシュしない)。
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 5000], [0, 5000]]}),
+    )
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({"legal_conditions": {"用途地域": "未設定"}}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [20000, 0], [20000, 20000], [0, 20000]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("effective_daylighting_ratio"))
+
     assert result["missing_inputs"] == [
         {
             "key": "land_use_category",

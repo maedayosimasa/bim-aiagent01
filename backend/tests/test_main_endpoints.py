@@ -135,6 +135,8 @@ def test_engine_legal_rules_endpoint(api_client):
         "daylighting_ratio", "accessible_door_width", "effective_daylighting_ratio",
         "ventilation_ratio", "floor_area_ratio", "site_road_frontage",
         "evacuation_walking_distance", "building_coverage_ratio",
+        "road_slant_compliance", "adjacent_boundary_slant_compliance",
+        "north_slant_compliance", "height_district_compliance",
     }
 
 
@@ -155,7 +157,7 @@ def test_engine_legal_rules_evaluate_endpoint_404_for_unknown_rule(api_client):
     assert response.status_code == 404
 
 
-def test_engine_legal_inputs_endpoint(api_client, monkeypatch):
+def test_engine_legal_inputs_endpoint(api_client, test_db, monkeypatch):
     monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
 
     response = api_client.get("/engine/legal_inputs")

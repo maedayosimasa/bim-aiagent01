@@ -2,7 +2,10 @@ import json
 
 import pytest
 
-from backend.engine.height_district_envelope import calculate_height_district_envelope
+from backend.engine.height_district_envelope import (
+    calculate_height_district_compliance,
+    calculate_height_district_envelope,
+)
 
 
 def _insert_site(test_db):
@@ -10,6 +13,14 @@ def _insert_site(test_db):
         "site1", "Zone", "敷地",
         json.dumps({}),
         json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+
+def _insert_wall(test_db, guid, points, z_max, z_min=0):
+    test_db.insert_element(
+        guid, "Wall", guid,
+        json.dumps({}),
+        json.dumps({"type": "line", "points": points, "z_min": z_min, "z_max": z_max}),
     )
 
 
@@ -131,3 +142,84 @@ def test_raises_for_unparseable_numeric_env_var(test_db, monkeypatch):
 
     with pytest.raises(ValueError):
         calculate_height_district_envelope(kubun="flat", max_height_m=10.0)
+
+
+def test_compliance_flat_kubun_passes_when_within_limit(test_db):
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=11000)
+
+    result = calculate_height_district_compliance(kubun="flat", max_height_m=10.0, kanwa_m=2.0)
+
+    assert result[0]["measured_value"] == pytest.approx(11.0 - 12.0)
+    assert result[0]["measured_value"] <= 0
+
+
+def test_compliance_flat_kubun_fails_when_exceeding_limit(test_db):
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=15000)
+
+    result = calculate_height_district_compliance(kubun="flat", max_height_m=10.0, kanwa_m=2.0)
+
+    assert result[0]["measured_value"] == pytest.approx(15.0 - 12.0)
+    assert result[0]["measured_value"] > 0
+
+
+def test_compliance_flat_kubun_unknown_when_max_height_missing(test_db):
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=11000)
+
+    result = calculate_height_district_compliance(kubun="flat")
+
+    assert result[0]["measured_value"] is None
+
+
+def test_compliance_north_slant_kubun_passes_when_within_limit(test_db):
+    _insert_site(test_db)
+    # 最北端(y=10000)から5m南(y=5000)での高さ上限 = 3.0 + 0.6*5 = 6.0m。
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=5000)
+
+    result = calculate_height_district_compliance(
+        north_degrees=0, kubun="north_slant", rise_m=3.0, gradient=0.6
+    )
+
+    assert result[0]["measured_value"] == pytest.approx(5.0 - 6.0)
+    assert result[0]["measured_value"] <= 0
+
+
+def test_compliance_north_slant_kubun_fails_when_exceeding_limit(test_db):
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=8000)
+
+    result = calculate_height_district_compliance(
+        north_degrees=0, kubun="north_slant", rise_m=3.0, gradient=0.6
+    )
+
+    assert result[0]["measured_value"] == pytest.approx(8.0 - 6.0)
+    assert result[0]["measured_value"] > 0
+
+
+def test_compliance_north_slant_kubun_unknown_when_north_degrees_missing(test_db, monkeypatch):
+    monkeypatch.delenv("NORTH_DEGREES", raising=False)
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=5000)
+
+    result = calculate_height_district_compliance(kubun="north_slant", rise_m=3.0, gradient=0.6)
+
+    assert result[0]["measured_value"] is None
+
+
+def test_compliance_unknown_when_kubun_not_applicable(test_db):
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=5000)
+
+    result = calculate_height_district_compliance(kubun="none")
+
+    assert result[0]["measured_value"] is None
+
+
+def test_compliance_unknown_when_no_building_elements(test_db):
+    _insert_site(test_db)
+
+    result = calculate_height_district_compliance(kubun="flat", max_height_m=10.0)
+
+    assert result[0]["measured_value"] is None

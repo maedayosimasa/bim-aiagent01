@@ -26,12 +26,17 @@
     斜線、方位を問わない全周からの距離を使う条例等)は表現できない。
   - north_slant_envelope.pyと同じく、道路の反対側境界線までの緩和・
     north_degreesの角度の向きは未検証の前提。
+
+**(2026-08-14追加)`calculate_height_district_compliance()`**: 上記envelope
+計算と実際の建物高さ(engine/building_height.py)を比較したPASS/FAIL用実測値
+を返す。
 """
 
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
+from .building_height import building_height_points
 from .legal_inputs import resolve_legal_input
-from .north_slant_envelope import _north_unit_vector
+from .north_slant_envelope import _north_unit_vector, resolve_north_degrees_for_compliance
 from .site import get_site_boundary
 
 _MM_PER_M = 1_000
@@ -157,3 +162,155 @@ def calculate_height_district_envelope(
 
     # kubun未設定・"none"・不正な値はいずれも「計算しない」扱い。
     return _unresolved()
+
+
+def _height_limit_m_north_slant(
+    x: float, y: float, northmost_projection: float, north_x: float, north_y: float,
+    rise: float, grad: float, max_height: float | None, kanwa: float,
+) -> float:
+    projection = x * north_x + y * north_y
+    distance_m = (northmost_projection - projection) / _MM_PER_M
+    height_m = rise + grad * distance_m
+    if max_height is not None:
+        height_m = min(height_m, max_height)
+    return height_m + kanwa
+
+
+def calculate_height_district_compliance(
+    north_degrees: float | None = None,
+    kubun: str | None = None,
+    max_height_m: float | None = None,
+    rise_m: float | None = None,
+    gradient: float | None = None,
+    kanwa_m: float | None = None,
+) -> list[dict]:
+    """敷地(敷地境界線Zone)ごとに、高度地区envelopeと実際の建物高さ
+    (Wall/Slab/Roof/Column、engine/building_height.py)を比較したPASS/FAIL用
+    実測値(超過高さ、m)を返す。engine/road_slant_envelope.pyの
+    `calculate_road_slant_compliance()`と同じ考え方(site単位1項目)。
+
+    kubun="north_slant"の場合のnorth_degreesは、calculate_height_district_
+    envelope()と異なりArchicadから都度取得せず、north_slant_envelope.pyの
+    resolve_north_degrees_for_compliance()(legal_inputs.pyの"north_degrees"
+    キー、環境変数NORTH_DEGREES)で解決する——rule_engine.py経由の合否判定は
+    他のengine/*.pyと同じ「SQLiteキャッシュのみを読む、Archicad非依存」と
+    いうアーキテクチャ境界を守る必要があるため。
+
+    区分が未設定・対象外、必要な数値(絶対高さ・立ち上がり・勾配・真北方向)
+    が揃わない、または敷地内に高さ情報を持つ建物要素が無い場合、
+    measured_value=None(UNKNOWN)を返す。
+    """
+    kubun = kubun or resolve_legal_input("kodo_chiku_kubun")
+    kanwa = _resolve_float_input("kodo_chiku_kanwa_m", kanwa_m) or 0.0
+    max_height = _resolve_float_input("kodo_chiku_max_height_m", max_height_m)
+
+    site_zones = get_site_boundary()
+    all_points = building_height_points()
+
+    def _unresolved(reason: str):
+        return [
+            {
+                "target_guid": site["guid"],
+                "target_name": site["name"],
+                "measured_value": None,
+                "evidence": {"reason": reason},
+            }
+            for site in site_zones
+        ]
+
+    if kubun not in ("flat", "north_slant"):
+        return _unresolved("高度地区の指定区分(kodo_chiku_kubun)が未設定、または対象外です。")
+
+    if kubun == "flat":
+        if max_height is None:
+            return _unresolved("高度地区の最高限度(kodo_chiku_max_height_m)が未設定です。")
+
+        height_limit_m = max_height + kanwa
+
+        results = []
+        for site in site_zones:
+            site_polygon = Polygon(site["points"])
+            points_in_site = [p for p in all_points if site_polygon.contains(Point(p["x"], p["y"]))]
+
+            if not points_in_site:
+                results.append({
+                    "target_guid": site["guid"],
+                    "target_name": site["name"],
+                    "measured_value": None,
+                    "evidence": {"reason": "敷地内に高さ情報を持つ建物要素(Wall/Slab/Roof/Column)がありません。"},
+                })
+                continue
+
+            worst_point = max(points_in_site, key=lambda p: p["height_m"])
+            excess_m = worst_point["height_m"] - height_limit_m
+
+            results.append({
+                "target_guid": site["guid"],
+                "target_name": site["name"],
+                "measured_value": excess_m,
+                "evidence": {
+                    "kodo_chiku_kubun": kubun,
+                    "worst_element_guid": worst_point["guid"],
+                    "worst_element_name": worst_point["name"],
+                    "worst_element_height_m": worst_point["height_m"],
+                    "height_limit_m_at_worst_element": height_limit_m,
+                },
+            })
+
+        return results
+
+    # kubun == "north_slant"
+    rise = _resolve_float_input("kodo_chiku_rise_m", rise_m)
+    grad = _resolve_float_input("kodo_chiku_gradient", gradient)
+    resolved_north_degrees = resolve_north_degrees_for_compliance(north_degrees)
+
+    if rise is None or grad is None or resolved_north_degrees is None:
+        return _unresolved(
+            "高度地区の立ち上がり高さ・勾配(kodo_chiku_rise_m/kodo_chiku_gradient)、"
+            "または真北方向(north_degrees)が未設定です。"
+        )
+
+    north_x, north_y = _north_unit_vector(resolved_north_degrees)
+
+    results = []
+    for site in site_zones:
+        site_polygon = Polygon(site["points"])
+        coords = list(site_polygon.exterior.coords[:-1])
+        northmost_projection = max(x * north_x + y * north_y for x, y in coords)
+
+        points_in_site = [p for p in all_points if site_polygon.contains(Point(p["x"], p["y"]))]
+
+        if not points_in_site:
+            results.append({
+                "target_guid": site["guid"],
+                "target_name": site["name"],
+                "measured_value": None,
+                "evidence": {"reason": "敷地内に高さ情報を持つ建物要素(Wall/Slab/Roof/Column)がありません。"},
+            })
+            continue
+
+        worst_point = max(
+            points_in_site,
+            key=lambda p: p["height_m"] - _height_limit_m_north_slant(
+                p["x"], p["y"], northmost_projection, north_x, north_y, rise, grad, max_height, kanwa
+            ),
+        )
+        limit_m = _height_limit_m_north_slant(
+            worst_point["x"], worst_point["y"], northmost_projection, north_x, north_y, rise, grad, max_height, kanwa
+        )
+        excess_m = worst_point["height_m"] - limit_m
+
+        results.append({
+            "target_guid": site["guid"],
+            "target_name": site["name"],
+            "measured_value": excess_m,
+            "evidence": {
+                "kodo_chiku_kubun": kubun,
+                "worst_element_guid": worst_point["guid"],
+                "worst_element_name": worst_point["name"],
+                "worst_element_height_m": worst_point["height_m"],
+                "height_limit_m_at_worst_element": limit_m,
+            },
+        })
+
+    return results

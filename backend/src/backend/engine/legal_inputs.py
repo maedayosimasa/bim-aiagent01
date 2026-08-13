@@ -60,8 +60,13 @@ LEGAL_INPUT_DEFINITIONS: dict[str, LegalInputDefinition] = {
         label="用途地域",
         description=(
             "residential(住居系)/industrial(工業系)/commercial(商業系・"
-            "無指定)のいずれか。effective_daylighting_ratio(採光補正係数の"
-            "算式選択)が使用する。"
+            "無指定)の粗い3分類、または都市計画法8条1項1号の正式な用途地域名"
+            "(例:「第一種住居地域」「準工業地域」、全13種)のいずれかを指定する。"
+            "正式名称を指定した場合は`normalize_land_use_category()`(本モジュール)"
+            "が3分類へ自動変換し、低層/中高層住居専用地域・田園住居地域なら"
+            "kitagawa_shasen_kubunの未設定時の既定値としても使われる(下記参照)。"
+            "effective_daylighting_ratio(採光補正係数の算式選択)・道路斜線制限・"
+            "隣地斜線制限が使用する。"
         ),
         category="都市計画",
     ),
@@ -201,10 +206,26 @@ LEGAL_INPUT_DEFINITIONS: dict[str, LegalInputDefinition] = {
             "low_rise(第一種/第二種低層住居専用地域・田園住居地域、立ち上がり"
             "5m)/mid_rise(第一種/第二種中高層住居専用地域、立ち上がり10m)/"
             "not_applicable(それ以外の用途地域、北側斜線制限の対象外)の"
-            "いずれか。engine/north_slant_envelope.pyが使用する。用途地域の"
-            "細分類(低層/中高層の区別)はland_use_category(residential/"
-            "industrial/commercial)だけでは判定できないため、この専用キーで"
-            "明示的に指定する(推測しない)。"
+            "いずれか。engine/north_slant_envelope.pyが使用する。未設定の場合、"
+            "land_use_categoryに正式な用途地域名(例:「第一種低層住居専用"
+            "地域」)が指定されていればそこから自動で導出する"
+            "(get_kitagawa_shasen_kubun())。land_use_categoryが粗い3分類"
+            "(residential等)のみの場合は低層/中高層の区別が付かないため、"
+            "この専用キーで明示的に指定する必要がある(推測しない)。"
+        ),
+        category="日影・斜線",
+    ),
+    "north_degrees": LegalInputDefinition(
+        key="north_degrees",
+        label="真北方向の角度(度)",
+        description=(
+            "北側斜線制限・高度地区(kodo_chiku_kubun=north_slant)の判定計算に"
+            "使う真北方向(度)。Archicadのプロジェクト設定(GetGeoLocation)から"
+            "取得できる値だが、法規チェック(engine/rule_engine.py経由の合否"
+            "判定)はSQLiteキャッシュのみを読む既存アーキテクチャを守るため、"
+            "都度Archicadへ問い合わせず、この値を明示的に指定する必要がある"
+            "(/engine/north_slant_envelope等の表示専用エンドポイントは別途"
+            "Archicadから都度取得する)。"
         ),
         category="日影・斜線",
     ),
@@ -221,7 +242,81 @@ ARCHICAD_LEGAL_PROPERTY_KEYWORDS: dict[str, list[str]] = {
     "kenpei_ritsu": ["建蔽率", "建ぺい率"],
     "yoseki_ritsu": ["容積率"],
     "douro_haba": ["前面道路幅", "道路幅員"],
+    # (2026-08-14追加)高さ制限の合否判定(engine/road_slant_envelope.py等の
+    # calculate_*_compliance())に使う。値は「residential」等の粗い3分類では
+    # なく、正式な用途地域名(例:「第一種住居地域」)がそのまま入力される
+    # 想定のため、normalize_land_use_category()で変換する。
+    "land_use_category": ["用途地域"],
 }
+
+
+# 都市計画法8条1項1号の用途地域(13種、2018年の田園住居地域追加後の現行制度)
+# を、このプロジェクトの粗い3分類(residential/industrial/commercial、
+# 道路斜線・隣地斜線の勾配選択やeffective_daylighting.pyの採光補正係数選択
+# で使う)、および北側斜線制限の適用区分(kitagawa_shasen_kubun)へ変換する。
+# キーワードは部分一致(ARCHICAD_LEGAL_PROPERTY_KEYWORDSと同じ考え方、
+# 自治体・テンプレートによる表記揺れに対応)。低層/中高層/その他で勾配・
+# 立ち上がりが変わる北側斜線制限以外(道路斜線・隣地斜線・採光補正係数)は
+# 住居系/非住居系の2区分しか無いため、どの正式名称も必ずland_use_category
+# 側では"residential"/"industrial"/"commercial"のいずれかに丸まる。
+_ZONE_NAME_TO_CATEGORY: list[tuple[str, str, str]] = [
+    # (キーワード, land_use_category, kitagawa_shasen_kubun)
+    ("第一種低層住居専用地域", "residential", "low_rise"),
+    ("第二種低層住居専用地域", "residential", "low_rise"),
+    ("田園住居地域", "residential", "low_rise"),
+    ("第一種中高層住居専用地域", "residential", "mid_rise"),
+    ("第二種中高層住居専用地域", "residential", "mid_rise"),
+    ("第一種住居地域", "residential", "not_applicable"),
+    ("第二種住居地域", "residential", "not_applicable"),
+    ("準住居地域", "residential", "not_applicable"),
+    ("近隣商業地域", "commercial", "not_applicable"),
+    ("商業地域", "commercial", "not_applicable"),
+    ("準工業地域", "industrial", "not_applicable"),
+    ("工業専用地域", "industrial", "not_applicable"),
+    ("工業地域", "industrial", "not_applicable"),
+]
+
+_COARSE_LAND_USE_CATEGORIES = {"residential", "industrial", "commercial"}
+
+
+def normalize_land_use_category(raw: str) -> tuple[str, str]:
+    """raw文字列を(land_use_category, kitagawa_shasen_kubun)に正規化する。
+
+    rawが既に既知の粗い3分類("residential"/"industrial"/"commercial"、環境変数
+    LAND_USE_CATEGORYの従来の運用)であればそのまま返す(kitagawa_shasen_kubun
+    は低層/中高層の細分類情報が無いため"not_applicable"扱い)。それ以外は
+    都市計画法上の正式な用途地域名(敷地ZoneのArchicadカスタムProperty
+    「用途地域」由来を想定)として_ZONE_NAME_TO_CATEGORYと部分一致で照合する。
+    どちらにも一致しない場合はValueErrorを送出する(推測しない、道路斜線等
+    の`raise ValueError(f"未知の用途地域カテゴリです: ...")`と同じ方針)。
+    """
+    if raw in _COARSE_LAND_USE_CATEGORIES:
+        return raw, "not_applicable"
+
+    for keyword, category, kubun in _ZONE_NAME_TO_CATEGORY:
+        if keyword in raw:
+            return category, kubun
+
+    raise ValueError(
+        f"未知の用途地域です: {raw!r}(residential/industrial/commercial、"
+        "または「第一種低層住居専用地域」等の正式な用途地域名を指定してください)"
+    )
+
+
+# (2026-08-14実データで発覚・同日修正)Archicadのプロパティ(特にピック
+# リスト/Enum型)は、ユーザーが未選択の場合に空文字ではなく「未設定」等の
+# プレースホルダー文字列を値として返すことがある。実データで「用途地域」
+# プロパティがピックリストの初期値のまま同期され、これを実際の用途地域名
+# として解釈しようとしたnormalize_land_use_category()がValueErrorを送出し、
+# /agent/legal_reportが500エラーになる不具合が発生した(land_use_categoryに
+# required_inputsが無いため、_missing_inputs()による事前チェックもすり抜けて
+# いた)。これらの値は「未入力」と同義なので、通常のNone(未設定)と同じ
+# 扱いにする。
+_UNSET_PROPERTY_VALUES = {"未設定", "未定", "-", "ー", "―", ""}
+
+
+def _is_unset_property_value(value: str) -> bool:
+    return value.strip() in _UNSET_PROPERTY_VALUES
 
 
 def _clean_property_value(raw: str) -> str:
@@ -244,8 +339,9 @@ def _resolve_from_site_properties(key: str) -> str | None:
     """敷地ZoneのArchicadカスタムProperty(properties.legal_conditions、
     sync_from_archicad()が保存)からkeyに対応する値を探す。
 
-    ARCHICAD_LEGAL_PROPERTY_KEYWORDSに未登録のkey、または一度も同期して
-    いない・敷地Zoneが見つからない・該当プロパティが未設定の場合はNone。
+    ARCHICAD_LEGAL_PROPERTY_KEYWORDSに未登録のkey、一度も同期していない・
+    敷地Zoneが見つからない・該当プロパティが未設定の場合、または値が
+    "未設定"等のプレースホルダー(_UNSET_PROPERTY_VALUES参照)の場合はNone。
 
     (2026-08-14実データ調査で修正)以前は要素タイプをZone/Room/Meshに
     限定していたが、実データで敷地の目印がObject型要素(archicad_id="敷地")
@@ -265,8 +361,12 @@ def _resolve_from_site_properties(key: str) -> str | None:
             continue
         legal_conditions = properties.get("legal_conditions") or {}
         for property_name, value in legal_conditions.items():
-            if value is not None and any(kw in property_name for kw in keywords):
-                return _clean_property_value(str(value))
+            if value is None or not any(kw in property_name for kw in keywords):
+                continue
+            cleaned = _clean_property_value(str(value))
+            if _is_unset_property_value(cleaned):
+                continue
+            return cleaned
 
     return None
 
