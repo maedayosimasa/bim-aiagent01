@@ -665,6 +665,18 @@ export type NorthSlantEnvelopeEntry = {
   vertices: HeightRestrictionEnvelopeVertex[];
 };
 
+export type HeightDistrictEnvelopeEntry = {
+  site_guid: string;
+  site_name: string;
+  resolved: boolean;
+  kodo_chiku_kubun: string | null;
+  kanwa_m: number;
+  max_height_m?: number | null;
+  rise_height_m?: number;
+  gradient?: number;
+  vertices: HeightRestrictionEnvelopeVertex[];
+};
+
 export type HeightRestrictionEnvelopeProposal<T> = {
   proposal_id: number;
   summary: string;
@@ -728,6 +740,40 @@ export function proposeNorthSlantEnvelope(kitagawaShasenKubun?: string, northDeg
     proposals: HeightRestrictionEnvelopeProposal<NorthSlantEnvelopeEntry>[];
     envelopes: NorthSlantEnvelopeEntry[];
   }>(`/engine/north_slant_envelope/propose${_northSlantQuery(kitagawaShasenKubun, northDegrees)}`);
+}
+
+export type HeightDistrictEnvelopeParams = {
+  kubun?: string;
+  maxHeightM?: number;
+  riseM?: number;
+  gradient?: number;
+  kanwaM?: number;
+  northDegrees?: number;
+};
+
+function _heightDistrictQuery(params: HeightDistrictEnvelopeParams): string {
+  const search = new URLSearchParams();
+  if (params.kubun) search.set("kubun", params.kubun);
+  if (params.maxHeightM !== undefined) search.set("max_height_m", String(params.maxHeightM));
+  if (params.riseM !== undefined) search.set("rise_m", String(params.riseM));
+  if (params.gradient !== undefined) search.set("gradient", String(params.gradient));
+  if (params.kanwaM !== undefined) search.set("kanwa_m", String(params.kanwaM));
+  if (params.northDegrees !== undefined) search.set("north_degrees", String(params.northDegrees));
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+export function getHeightDistrictEnvelope(params: HeightDistrictEnvelopeParams) {
+  return get<HeightDistrictEnvelopeEntry[]>(
+    `/engine/height_district_envelope${_heightDistrictQuery(params)}`
+  );
+}
+
+export function proposeHeightDistrictEnvelope(params: HeightDistrictEnvelopeParams) {
+  return post<{
+    proposals: HeightRestrictionEnvelopeProposal<HeightDistrictEnvelopeEntry>[];
+    envelopes: HeightDistrictEnvelopeEntry[];
+  }>(`/engine/height_district_envelope/propose${_heightDistrictQuery(params)}`);
 }
 
 export function approveHeightRestrictionEnvelope(proposalId: number) {

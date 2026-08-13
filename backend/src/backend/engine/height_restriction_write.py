@@ -1,5 +1,6 @@
-"""高さ制限のenvelope(道路斜線/隣地斜線/北側斜線、engine/*_slant_envelope.py)
-をArchicadへMeshとして書き込む、許可制の書き込みフロー(2026-08-13追加)。
+"""高さ制限のenvelope(道路斜線/隣地斜線/北側斜線/高度地区、engine/
+*_slant_envelope.py・engine/height_district_envelope.py)をArchicadへMesh
+として書き込む、許可制の書き込みフロー(2026-08-13追加)。
 
 CLAUDE.md「⑩ アクション/操作層」に記載の通り、既存の書き込み系Tapir
 ラッパー(move_archicad_element等)には監査ログが無く、これがAIエージェント
@@ -10,18 +11,19 @@ CLAUDE.md「⑩ アクション/操作層」に記載の通り、既存の書き
 書き込みは2段階の明示的な承認フローを取る(「許可制」):
   1. propose_*_envelope_mesh(): envelopeを計算し、Archicadへはまだ一切
      書き込まず、write_audit_logへstatus="proposed"として記録するだけ
-     (敷地ごとにproposal_idを発行する)。3種のenvelope(道路斜線/隣地斜線/
-     北側斜線)はいずれも{site_guid, site_name, resolved, vertices: [{x,y,z_m}]}
-     という共通の形を持つため、_propose_envelope_mesh()に集約している。
+     (敷地ごとにproposal_idを発行する)。4種のenvelope(道路斜線/隣地斜線/
+     北側斜線/高度地区)はいずれも{site_guid, site_name, resolved, vertices:
+     [{x,y,z_m}]}という共通の形を持つため、_propose_envelope_mesh()に
+     集約している。
   2. approve_envelope_mesh(proposal_id): 指定proposal_idの提案を取り出し、
      実際にTapirのCreateMeshesを呼んでArchicadへ書き込む。成功すれば
      status="written"+result_guid、失敗すればstatus="failed"+error_message
      を記録する。存在しない/既に処理済み(status!="proposed")のproposal_id
      はValueErrorにする(同じ提案の二重書き込み・取り消し済み提案の書き込み
      を防ぐ)。この関数はenvelopeの種類を一切気にしない(監査ログに保存
-     された頂点データをそのままMeshにするだけ)ため、3種いずれの提案にも
-     共通で使う(main.pyのエンドポイントも/engine/road_slant_envelope/approve
-     1本を3種共通の承認窓口として使い回している)。
+     された頂点データをそのままMeshにするだけ)ため、4種いずれの提案にも
+     共通で使う(main.pyのエンドポイントも/engine/height_restrictions/approve
+     1本を4種共通の承認窓口として使い回している)。
 
 **このモジュールはAIエージェント(agent/tools.py)には公開しない。** 監査
 ログの追加は「誰が/いつ/何を」を記録可能にすることが目的であり、AIエージェ
@@ -35,12 +37,14 @@ import json
 from ..archicad_mcp import tapir
 from ..database import db
 from .adjacent_boundary_slant_envelope import calculate_adjacent_boundary_slant_envelope
+from .height_district_envelope import calculate_height_district_envelope
 from .north_slant_envelope import calculate_north_slant_envelope
 from .road_slant_envelope import calculate_road_slant_envelope
 
 ACTION_ROAD_SLANT_ENVELOPE_MESH = "create_road_slant_envelope_mesh"
 ACTION_ADJACENT_BOUNDARY_SLANT_ENVELOPE_MESH = "create_adjacent_boundary_slant_envelope_mesh"
 ACTION_NORTH_SLANT_ENVELOPE_MESH = "create_north_slant_envelope_mesh"
+ACTION_HEIGHT_DISTRICT_ENVELOPE_MESH = "create_height_district_envelope_mesh"
 
 
 def _propose_envelope_mesh(action: str, label: str, envelopes: list[dict]) -> dict:
@@ -91,6 +95,26 @@ def propose_north_slant_envelope_mesh(
     """
     envelopes = calculate_north_slant_envelope(north_degrees, kitagawa_shasen_kubun)
     return _propose_envelope_mesh(ACTION_NORTH_SLANT_ENVELOPE_MESH, "北側斜線制限", envelopes)
+
+
+def propose_height_district_envelope_mesh(
+    north_degrees: float | None = None,
+    kubun: str | None = None,
+    max_height_m: float | None = None,
+    rise_m: float | None = None,
+    gradient: float | None = None,
+    kanwa_m: float | None = None,
+) -> dict:
+    """高度地区(都市計画法8条1項3号)のenvelopeを提案として記録する。
+
+    north_degreesはkubun="north_slant"の場合のみ必要(呼び出し側が
+    Archicadの GetGeoLocationへ都度問い合わせて解決する、engine/
+    height_district_envelope.pyのモジュールdocstring参照)。
+    """
+    envelopes = calculate_height_district_envelope(
+        north_degrees, kubun, max_height_m, rise_m, gradient, kanwa_m
+    )
+    return _propose_envelope_mesh(ACTION_HEIGHT_DISTRICT_ENVELOPE_MESH, "高度地区", envelopes)
 
 
 async def approve_envelope_mesh(proposal_id: int) -> dict:

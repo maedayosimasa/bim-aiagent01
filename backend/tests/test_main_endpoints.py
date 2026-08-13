@@ -5,6 +5,8 @@ HTTP経由で叩き、配線(ルーティング・リクエスト/レスポン�
 
 import json
 
+import pytest
+
 
 def test_root_endpoint(api_client):
     response = api_client.get("/")
@@ -335,6 +337,58 @@ def test_engine_north_slant_envelope_propose_endpoint_with_explicit_north_degree
 
     assert response.status_code == 200
     assert len(response.json()["proposals"]) == 1
+
+
+def test_engine_height_district_envelope_endpoint_flat_kubun(api_client, test_db):
+    # kubun="flat"はnorth_degreesを必要としないため、Archicad接続無しでも
+    # 動作する(モックせずそのまま呼べることを確認する)。
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    response = api_client.get(
+        "/engine/height_district_envelope?kubun=flat&max_height_m=10&kanwa_m=2"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["resolved"] is True
+    assert body[0]["vertices"][0]["z_m"] == pytest.approx(12.0)
+
+
+def test_engine_height_district_envelope_propose_endpoint_flat_kubun(api_client, test_db):
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    response = api_client.post(
+        "/engine/height_district_envelope/propose?kubun=flat&max_height_m=10"
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["proposals"]) == 1
+
+
+def test_engine_height_district_envelope_endpoint_north_slant_kubun_with_explicit_north(
+    api_client, test_db
+):
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    response = api_client.get(
+        "/engine/height_district_envelope"
+        "?kubun=north_slant&rise_m=3&gradient=0.6&north_degrees=0"
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["resolved"] is True
 
 
 def test_engine_analysis_snapshot_endpoint(api_client, test_db):

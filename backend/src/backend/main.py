@@ -19,7 +19,7 @@ from .engine.room_engine import analyze_room_adjacency
 from .engine.evacuation_engine import find_evacuation_routes
 from .engine.code_engine import check_daylighting, check_accessible_door_width
 from .engine.effective_daylighting import calculate_effective_daylighting
-from .engine.legal_inputs import list_legal_inputs
+from .engine.legal_inputs import list_legal_inputs, resolve_legal_input
 from .engine.rule_engine import (
     run_daylighting_check,
     run_accessible_door_width_check,
@@ -32,10 +32,12 @@ from .engine.window_classifier import classify_windows
 from .engine.road_slant_envelope import calculate_road_slant_envelope
 from .engine.adjacent_boundary_slant_envelope import calculate_adjacent_boundary_slant_envelope
 from .engine.north_slant_envelope import calculate_north_slant_envelope
+from .engine.height_district_envelope import calculate_height_district_envelope
 from .engine.height_restriction_write import (
     propose_road_slant_envelope_mesh,
     propose_adjacent_boundary_slant_envelope_mesh,
     propose_north_slant_envelope_mesh,
+    propose_height_district_envelope_mesh,
     approve_envelope_mesh,
 )
 from .database.db import create_tables
@@ -454,16 +456,18 @@ def engine_windows():
 
 
 # ==============================
-# 高さ制限 envelope の可視化(2026-08-13追加、道路斜線→隣地斜線・北側斜線の順で実装)
+# 高さ制限 envelope の可視化(2026-08-13追加、道路斜線→隣地斜線・北側斜線→高度地区の順で実装)
 # 建築基準法56条1項の道路斜線制限(1号)・隣地斜線制限(2号)・北側斜線制限
-# (3号)を幾何的に近似し(それぞれengine/road_slant_envelope.py、engine/
-# adjacent_boundary_slant_envelope.py、engine/north_slant_envelope.py)、
+# (3号)、および都市計画法8条1項3号の高度地区(自治体条例の内容をlegal_
+# inputs.pyから明示的に受け取る)を幾何的に近似し(それぞれengine/
+# road_slant_envelope.py、engine/adjacent_boundary_slant_envelope.py、
+# engine/north_slant_envelope.py、engine/height_district_envelope.py)、
 # 承認制でArchicad本体へMeshとして書き込む(engine/height_restriction_
 # write.py)。書き込みは「計算(read-only)→提案(監査ログへproposedとして
 # 記録、Archicadへは未書き込み)→承認(実際にArchicadへ書き込み)」の3段階で、
 # 承認は人間がfrontendから明示的に行う(AIエージェントには公開していない)。
 # 承認エンドポイント(/engine/height_restrictions/approve)はenvelopeの種類を
-# 判別しないため3種で共通(engine/height_restriction_write.pyのapprove_
+# 判別しないため4種で共通(engine/height_restriction_write.pyのapprove_
 # envelope_mesh()参照)。
 # ==============================
 
@@ -543,6 +547,55 @@ async def engine_north_slant_envelope_propose(
 
     resolved_north = await _resolve_north_degrees(north_degrees)
     return propose_north_slant_envelope_mesh(resolved_north, kitagawa_shasen_kubun)
+
+
+async def _resolve_north_degrees_if_needed(kubun: str | None, north_degrees: float | None) -> float | None:
+    # 高度地区はkubun="north_slant"の場合のみ真北方向が必要(kubun="flat"では
+    # 不要)。不要な場合にまでArchicad接続を要求しないよう、実際に使う場合
+    # だけ_resolve_north_degrees()(Archicadへの都度問い合わせ)を呼ぶ。
+
+    resolved_kubun = kubun or resolve_legal_input("kodo_chiku_kubun")
+    if resolved_kubun != "north_slant":
+        return north_degrees
+    return await _resolve_north_degrees(north_degrees)
+
+
+@app.get("/engine/height_district_envelope")
+async def engine_height_district_envelope(
+    north_degrees: float | None = None,
+    kubun: str | None = None,
+    max_height_m: float | None = None,
+    rise_m: float | None = None,
+    gradient: float | None = None,
+    kanwa_m: float | None = None,
+):
+
+    resolved_north = await _resolve_north_degrees_if_needed(kubun, north_degrees)
+    try:
+        return calculate_height_district_envelope(
+            resolved_north, kubun, max_height_m, rise_m, gradient, kanwa_m
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/engine/height_district_envelope/propose")
+async def engine_height_district_envelope_propose(
+    north_degrees: float | None = None,
+    kubun: str | None = None,
+    max_height_m: float | None = None,
+    rise_m: float | None = None,
+    gradient: float | None = None,
+    kanwa_m: float | None = None,
+):
+
+    resolved_north = await _resolve_north_degrees_if_needed(kubun, north_degrees)
+    try:
+        return propose_height_district_envelope_mesh(
+            resolved_north, kubun, max_height_m, rise_m, gradient, kanwa_m
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/engine/height_restrictions/approve")

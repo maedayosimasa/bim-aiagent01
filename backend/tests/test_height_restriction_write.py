@@ -178,6 +178,56 @@ def test_propose_north_slant_envelope_mesh_no_proposal_when_not_applicable(test_
     assert result["proposals"] == []
 
 
+def test_propose_height_district_envelope_mesh_creates_proposed_entry(test_db, monkeypatch):
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = height_restriction_write.propose_height_district_envelope_mesh(
+        kubun="flat", max_height_m=10.0
+    )
+
+    assert len(result["proposals"]) == 1
+    entry = db_module.get_audit_log_entry(result["proposals"][0]["proposal_id"])
+    assert entry["status"] == "proposed"
+    assert entry["action"] == height_restriction_write.ACTION_HEIGHT_DISTRICT_ENVELOPE_MESH
+
+
+def test_propose_height_district_envelope_mesh_no_proposal_when_unresolved(test_db):
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = height_restriction_write.propose_height_district_envelope_mesh(kubun="none")
+
+    assert result["proposals"] == []
+
+
+def test_approve_envelope_mesh_works_for_height_district_proposal(test_db, monkeypatch):
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    async def fake_create_mesh(*args, **kwargs):
+        return {"elements": [{"elementId": {"guid": "guid-new-mesh"}}]}
+
+    monkeypatch.setattr(height_restriction_write.tapir, "create_mesh", fake_create_mesh)
+
+    proposal = height_restriction_write.propose_height_district_envelope_mesh(
+        kubun="flat", max_height_m=10.0
+    )["proposals"][0]
+
+    result = asyncio.run(height_restriction_write.approve_envelope_mesh(proposal["proposal_id"]))
+
+    assert result["result_guid"] == "guid-new-mesh"
+
+
 def test_approve_envelope_mesh_works_for_adjacent_and_north_proposals(test_db, monkeypatch):
     # approve_envelope_mesh()はenvelopeの種類を判別しないため、道路斜線以外の
     # 提案(隣地斜線・北側斜線)も同じ関数で承認できることを確認する。

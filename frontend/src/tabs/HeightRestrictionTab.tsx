@@ -3,17 +3,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveHeightRestrictionEnvelope,
   getAdjacentBoundarySlantEnvelope,
+  getHeightDistrictEnvelope,
   getNorthSlantEnvelope,
   getRoadSlantEnvelope,
   getWriteAuditLog,
   proposeAdjacentBoundarySlantEnvelope,
+  proposeHeightDistrictEnvelope,
   proposeNorthSlantEnvelope,
   proposeRoadSlantEnvelope,
   type HeightRestrictionEnvelopeProposal,
   type HeightRestrictionEnvelopeVertex,
 } from "../api/client";
 
-type EnvelopeType = "road" | "adjacent" | "north";
+type EnvelopeType = "road" | "adjacent" | "north" | "district";
 
 type EnvelopeEntry = {
   site_guid: string;
@@ -26,6 +28,7 @@ const ENVELOPE_LABELS: Record<EnvelopeType, string> = {
   road: "道路斜線制限(56条1項1号)",
   adjacent: "隣地斜線制限(56条1項2号)",
   north: "北側斜線制限(56条1項3号)",
+  district: "高度地区(都市計画法8条1項3号)",
 };
 
 const LAND_USE_OPTIONS: { value: string; label: string }[] = [
@@ -40,6 +43,12 @@ const KITAGAWA_KUBUN_OPTIONS: { value: string; label: string }[] = [
   { value: "not_applicable", label: "対象外の用途地域" },
 ];
 
+const KODO_CHIKU_KUBUN_OPTIONS: { value: string; label: string }[] = [
+  { value: "flat", label: "絶対高さ制限" },
+  { value: "north_slant", label: "真北方向の斜線制限型" },
+  { value: "none", label: "指定なし" },
+];
+
 function heightRange(entry: EnvelopeEntry): string {
   if (!entry.resolved || entry.vertices.length === 0) return "-";
   const heights = entry.vertices.map((v) => v.z_m);
@@ -52,16 +61,36 @@ function HeightRestrictionTab() {
   const [landUseCategory, setLandUseCategory] = useState("residential");
   const [kitagawaShasenKubun, setKitagawaShasenKubun] = useState("low_rise");
   const [northDegrees, setNorthDegrees] = useState<string>("");
+  const [kodoChikuKubun, setKodoChikuKubun] = useState("flat");
+  const [kodoChikuMaxHeightM, setKodoChikuMaxHeightM] = useState<string>("");
+  const [kodoChikuRiseM, setKodoChikuRiseM] = useState<string>("");
+  const [kodoChikuGradient, setKodoChikuGradient] = useState<string>("");
+  const [kodoChikuKanwaM, setKodoChikuKanwaM] = useState<string>("");
   const [previewed, setPreviewed] = useState(false);
   const [approvedResults, setApprovedResults] = useState<Record<number, string | null>>({});
   const [showAuditLog, setShowAuditLog] = useState(false);
 
+  const numOrUndefined = (s: string) => (s ? Number(s) : undefined);
+
+  const districtParams = () => ({
+    kubun: kodoChikuKubun,
+    maxHeightM: numOrUndefined(kodoChikuMaxHeightM),
+    riseM: numOrUndefined(kodoChikuRiseM),
+    gradient: numOrUndefined(kodoChikuGradient),
+    kanwaM: numOrUndefined(kodoChikuKanwaM),
+    northDegrees: numOrUndefined(northDegrees),
+  });
+
   const previewQuery = useQuery({
-    queryKey: ["height-restriction-envelope", envelopeType, landUseCategory, kitagawaShasenKubun, northDegrees],
+    queryKey: [
+      "height-restriction-envelope", envelopeType, landUseCategory, kitagawaShasenKubun,
+      northDegrees, kodoChikuKubun, kodoChikuMaxHeightM, kodoChikuRiseM, kodoChikuGradient, kodoChikuKanwaM,
+    ],
     queryFn: async (): Promise<EnvelopeEntry[]> => {
       if (envelopeType === "road") return getRoadSlantEnvelope(landUseCategory);
       if (envelopeType === "adjacent") return getAdjacentBoundarySlantEnvelope(landUseCategory);
-      return getNorthSlantEnvelope(kitagawaShasenKubun, northDegrees ? Number(northDegrees) : undefined);
+      if (envelopeType === "district") return getHeightDistrictEnvelope(districtParams());
+      return getNorthSlantEnvelope(kitagawaShasenKubun, numOrUndefined(northDegrees));
     },
     enabled: previewed,
   });
@@ -73,7 +102,8 @@ function HeightRestrictionTab() {
     }> => {
       if (envelopeType === "road") return proposeRoadSlantEnvelope(landUseCategory);
       if (envelopeType === "adjacent") return proposeAdjacentBoundarySlantEnvelope(landUseCategory);
-      return proposeNorthSlantEnvelope(kitagawaShasenKubun, northDegrees ? Number(northDegrees) : undefined);
+      if (envelopeType === "district") return proposeHeightDistrictEnvelope(districtParams());
+      return proposeNorthSlantEnvelope(kitagawaShasenKubun, numOrUndefined(northDegrees));
     },
   });
 
@@ -176,6 +206,88 @@ function HeightRestrictionTab() {
                   resetPreview();
                 }}
                 placeholder="Archicadから取得"
+              />
+            </label>
+          </>
+        )}
+
+        {envelopeType === "district" && (
+          <>
+            <label>
+              指定区分:{" "}
+              <select
+                value={kodoChikuKubun}
+                onChange={(e) => {
+                  setKodoChikuKubun(e.target.value);
+                  resetPreview();
+                }}
+              >
+                {KODO_CHIKU_KUBUN_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              最高限度(m{kodoChikuKubun === "north_slant" ? "、頭打ち上限・省略可" : ""}):{" "}
+              <input
+                type="number"
+                value={kodoChikuMaxHeightM}
+                onChange={(e) => {
+                  setKodoChikuMaxHeightM(e.target.value);
+                  resetPreview();
+                }}
+              />
+            </label>
+            {kodoChikuKubun === "north_slant" && (
+              <>
+                <label>
+                  立ち上がり高さ(m):{" "}
+                  <input
+                    type="number"
+                    value={kodoChikuRiseM}
+                    onChange={(e) => {
+                      setKodoChikuRiseM(e.target.value);
+                      resetPreview();
+                    }}
+                  />
+                </label>
+                <label>
+                  勾配:{" "}
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={kodoChikuGradient}
+                    onChange={(e) => {
+                      setKodoChikuGradient(e.target.value);
+                      resetPreview();
+                    }}
+                  />
+                </label>
+                <label>
+                  真北の角度(度、省略時はArchicadから取得):{" "}
+                  <input
+                    type="number"
+                    value={northDegrees}
+                    onChange={(e) => {
+                      setNorthDegrees(e.target.value);
+                      resetPreview();
+                    }}
+                    placeholder="Archicadから取得"
+                  />
+                </label>
+              </>
+            )}
+            <label>
+              規制緩和による加算値(m、省略時は0):{" "}
+              <input
+                type="number"
+                value={kodoChikuKanwaM}
+                onChange={(e) => {
+                  setKodoChikuKanwaM(e.target.value);
+                  resetPreview();
+                }}
               />
             </label>
           </>

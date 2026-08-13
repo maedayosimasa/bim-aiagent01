@@ -58,10 +58,52 @@ LEGAL_INPUT_DEFINITIONS: dict[str, LegalInputDefinition] = {
         description="市街化区域/市街化調整区域/非線引き区域/都市計画区域外のいずれか。",
         category="都市計画",
     ),
-    "kodo_chiku": LegalInputDefinition(
-        key="kodo_chiku",
-        label="高度地区",
-        description="指定の有無、最高高さ・最低高さ制限の内容。",
+    "kodo_chiku_kubun": LegalInputDefinition(
+        key="kodo_chiku_kubun",
+        label="高度地区の指定区分",
+        description=(
+            "none(指定なし)/flat(絶対高さ制限のみ)/north_slant(真北方向の"
+            "斜線制限型、多くの自治体条例が採用する形式)のいずれか。高度地区は"
+            "都市計画法8条1項3号の地域地区で、自治体(都道府県・市町村)の"
+            "条例により最高限度・最低限度の内容が個別に定められ、建築基準法"
+            "56条の道路斜線・隣地斜線・北側斜線のような全国一律の計算式が"
+            "無いため、この区分と下記kodo_chiku_*の各値を明示的に指定する"
+            "必要がある(推測しない)。engine/height_district_envelope.pyが使用する。"
+        ),
+        category="都市計画",
+    ),
+    "kodo_chiku_max_height_m": LegalInputDefinition(
+        key="kodo_chiku_max_height_m",
+        label="高度地区の最高限度(絶対高さ、m)",
+        description=(
+            "kodo_chiku_kubun=flatの場合の絶対高さ上限、またはnorth_slantの"
+            "場合の頭打ち上限(自治体条例が併用する場合)。未指定なら"
+            "north_slantでは頭打ちなし。"
+        ),
+        category="都市計画",
+    ),
+    "kodo_chiku_rise_m": LegalInputDefinition(
+        key="kodo_chiku_rise_m",
+        label="高度地区の立ち上がり高さ(m)",
+        description="kodo_chiku_kubun=north_slantの場合の立ち上がり高さ(自治体条例による)。",
+        category="都市計画",
+    ),
+    "kodo_chiku_gradient": LegalInputDefinition(
+        key="kodo_chiku_gradient",
+        label="高度地区の勾配",
+        description="kodo_chiku_kubun=north_slantの場合の勾配(自治体条例による、北側斜線制限の1.25とは別に個別に定められる)。",
+        category="都市計画",
+    ),
+    "kodo_chiku_kanwa_m": LegalInputDefinition(
+        key="kodo_chiku_kanwa_m",
+        label="高度地区規制緩和による加算値(m)",
+        description=(
+            "天空率・敷地内空地の確保・角地等、自治体条例が定める緩和条件を"
+            "満たす場合に高さ制限へ加算できる値(m)。緩和条件を満たすかどうか"
+            "自体はBIMデータからは判定できないため、満たしていることを確認済み"
+            "の加算値をそのまま指定する(条件判定は行わない)。未指定なら0m"
+            "(緩和なし)として扱う。"
+        ),
         category="都市計画",
     ),
     "chiku_keikaku": LegalInputDefinition(
