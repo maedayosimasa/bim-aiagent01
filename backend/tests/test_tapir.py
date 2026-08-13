@@ -207,6 +207,18 @@ def _make_fake_tapir_server():
     def set_property_values_of_elements(input) -> dict:
         return {"executionResults": [{"success": True}]}
 
+    # CreateMeshesの応答形は{"elements": [{"elementId": {"guid": ...}}]}
+    # (CreateColumns/CreateObjects等、他のCreate*コマンドと共通の形、
+    # command_definitions.js/common_schema_definitions.jsで確認済み)。
+    # 受け取ったinputはserver.received_create_meshes_inputsに記録し、
+    # テスト側で単位変換(mm→m)が正しく行われているかを検証する。
+    server.received_create_meshes_inputs = []
+
+    @server.tool(name="CreateMeshes")
+    def create_meshes(input) -> dict:
+        server.received_create_meshes_inputs.append(input)
+        return {"elements": [{"elementId": {"guid": "guid-new-mesh"}}]}
+
     return server
 
 
@@ -353,6 +365,35 @@ def test_delete_elements():
     result = _run(tapir.delete_elements(["guid-1"], transport=transport))
 
     assert result["executionResults"][0]["success"] is True
+
+
+def test_create_mesh_converts_mm_to_m_and_extracts_guid():
+    server = _make_fake_tapir_server()
+    transport = InMemoryTransport(server)
+
+    vertices_mm = [
+        {"x": 0, "y": 0, "z": 0},
+        {"x": 10000, "y": 0, "z": 500},
+        {"x": 10000, "y": 10000, "z": 0},
+    ]
+
+    result = _run(
+        tapir.create_mesh(
+            vertices_mm, level_mm=1000, skirt_level_mm=-2000, transport=transport
+        )
+    )
+
+    assert result["elements"][0]["elementId"]["guid"] == "guid-new-mesh"
+
+    sent = server.received_create_meshes_inputs[0]["meshesData"][0]
+    assert sent["level"] == 1.0
+    assert sent["skirtLevel"] == -2.0
+    assert sent["skirtType"] == "WithSkirt"
+    assert sent["polygonCoordinates"] == [
+        {"x": 0.0, "y": 0.0, "z": 0.0},
+        {"x": 10.0, "y": 0.0, "z": 0.5},
+        {"x": 10.0, "y": 10.0, "z": 0.0},
+    ]
 
 
 def test_list_properties():

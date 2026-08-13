@@ -295,3 +295,20 @@ async def move_archicad_element(
 async def delete_archicad_elements(guids: list[str]) -> dict:
     """Archicad本体から要素を削除する(破壊的操作、元に戻せない)。"""
     return await tapir.delete_elements(guids)
+
+
+@mcp_server.tool()
+async def create_archicad_mesh(
+    vertices: list[dict], level: float = 0.0, skirt_level: float = 0.0
+) -> dict:
+    """Archicad本体に新規Mesh要素を作成する(破壊的操作)。
+
+    (2026-08-13追加)このツール自体は他の書き込み系ツール同様、承認確認を
+    内蔵しない薄いラッパー(既存のmove_archicad_element/delete_archicad_
+    elementsと同じ設計方針)。承認フロー・監査ログは呼び出し側の
+    engine/height_restriction_write.pyが担う——このツールは意図的に
+    AIエージェント(agent/tools.py)には公開していない。人間が明示的に
+    承認した後、frontend経由のREST APIからのみ呼ばれる想定。
+    vertices各要素は{"x":mm,"y":mm,"z":mm}(このプロジェクトの座標系)。
+    """
+    return await tapir.create_mesh(vertices, level, skirt_level)

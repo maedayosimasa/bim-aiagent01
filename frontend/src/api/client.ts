@@ -617,3 +617,69 @@ export function getTokenUsageDaily() {
 export function getTokenUsageJobs() {
   return get<{ jobs: TokenUsageJobRow[] }>("/agent/usage/jobs");
 }
+
+// ==============================
+// 道路斜線制限 envelope API(2026-08-13追加)
+// 建築基準法56条1項1号の道路斜線制限を幾何的に近似し(engine/
+// road_slant_envelope.py)、承認制でArchicad本体へMeshとして書き込む
+// (engine/height_restriction_write.py)。計算(read-only)→提案(監査ログへ
+// 記録するのみ、Archicad未書き込み)→承認(実際にArchicadへ書き込み)の
+// 3段階。
+// ==============================
+
+export type RoadSlantEnvelopeVertex = {
+  x: number;
+  y: number;
+  z_m: number;
+};
+
+export type RoadSlantEnvelopeEntry = {
+  site_guid: string;
+  site_name: string;
+  resolved: boolean;
+  land_use_category: string;
+  gradient: number;
+  applicable_distance_m: number;
+  vertices: RoadSlantEnvelopeVertex[];
+};
+
+export type RoadSlantEnvelopeProposal = {
+  proposal_id: number;
+  summary: string;
+  envelope: RoadSlantEnvelopeEntry;
+};
+
+export type WriteAuditLogEntry = {
+  id: number;
+  created_at: string;
+  action: string;
+  status: "proposed" | "written" | "failed" | "rejected";
+  summary: string | null;
+  payload_json: string | null;
+  result_guid: string | null;
+  error_message: string | null;
+  decided_at: string | null;
+};
+
+export function getRoadSlantEnvelope(landUseCategory?: string) {
+  const query = landUseCategory ? `?land_use_category=${encodeURIComponent(landUseCategory)}` : "";
+  return get<RoadSlantEnvelopeEntry[]>(`/engine/road_slant_envelope${query}`);
+}
+
+export function proposeRoadSlantEnvelope(landUseCategory?: string) {
+  const query = landUseCategory ? `?land_use_category=${encodeURIComponent(landUseCategory)}` : "";
+  return post<{ proposals: RoadSlantEnvelopeProposal[]; envelopes: RoadSlantEnvelopeEntry[] }>(
+    `/engine/road_slant_envelope/propose${query}`
+  );
+}
+
+export function approveRoadSlantEnvelope(proposalId: number) {
+  return post<{ proposal_id: number; result_guid: string | null; raw_result: unknown }>(
+    "/engine/road_slant_envelope/approve",
+    { proposal_id: proposalId }
+  );
+}
+
+export function getWriteAuditLog(limit = 50) {
+  return get<WriteAuditLogEntry[]>(`/engine/write_audit_log?limit=${limit}`);
+}

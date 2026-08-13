@@ -207,6 +207,42 @@ async def delete_elements(guids, transport=None):
     )
 
 
+async def create_mesh(vertices_mm, level_mm=0.0, skirt_level_mm=0.0, transport=None):
+    """新規Mesh要素を作成する(CreateMeshes、破壊的操作)。
+
+    (2026-08-13追加)engine/height_restriction_write.pyの道路斜線制限
+    envelope可視化機能で初めて使う書き込みコマンド。Windows側の実ソース
+    (archicad-mcp/src/tapir/command_definitions.js:1426-1517、
+    common_schema_definitions.jsのMeshDetails)で確認済み:
+      - 入力はmeshesData配列(このプロジェクトは常に1件のみ作成する)。
+        polygonCoordinatesは{x,y,z}のフラットなリスト(頂点3点以上、
+        穴なし)、単位はメートル。skirtType="WithSkirt"で側面を
+        skirtLevelまで垂らした閉じた立体にする(封筒形状の可視化に適する)。
+      - 戻り値は{"elements": [{"elementId": {"guid": ...}}]}
+        (CreateColumns/CreateObjects等、他のCreate*コマンドと共通の形)。
+
+    vertices_mmは[{"x":mm,"y":mm,"z":mm}, ...](このプロジェクトの座標系)。
+    Archicad側はメートル単位のため_to_m()で変換して送る。
+    """
+    return await _call(
+        "CreateMeshes",
+        {
+            "meshesData": [
+                {
+                    "level": _to_m(level_mm),
+                    "skirtType": "WithSkirt",
+                    "skirtLevel": _to_m(skirt_level_mm),
+                    "polygonCoordinates": [
+                        {"x": _to_m(v["x"]), "y": _to_m(v["y"]), "z": _to_m(v["z"])}
+                        for v in vertices_mm
+                    ],
+                }
+            ]
+        },
+        transport=transport,
+    )
+
+
 async def get_geo_location(transport=None):
     """プロジェクトの位置情報(緯度経度・標高・北方向)を取得する。
 
@@ -317,6 +353,12 @@ _METERS_TO_MM = 1000
 
 def _to_mm(value):
     return value * _METERS_TO_MM
+
+
+def _to_m(value_mm):
+    """_to_mm()の逆変換。書き込み系コマンド(create_mesh等)がArchicadへ
+    値を送る際に使う(このプロジェクトの座標系はmm、Archicad側はm)。"""
+    return value_mm / _METERS_TO_MM
 
 
 def _z_range_from_bounding_box(bounding_box_item):

@@ -104,3 +104,51 @@ def test_insert_token_usage_allows_null_cost(test_db):
     days = db.get_token_usage_daily()
 
     assert days[0]["cost_usd"] is None
+
+
+def test_insert_audit_log_proposal_creates_proposed_entry(test_db):
+    entry_id = db.insert_audit_log_proposal("create_x", "説明文", json.dumps({"a": 1}))
+
+    entry = db.get_audit_log_entry(entry_id)
+
+    assert entry["status"] == "proposed"
+    assert entry["action"] == "create_x"
+    assert entry["summary"] == "説明文"
+    assert json.loads(entry["payload_json"]) == {"a": 1}
+    assert entry["result_guid"] is None
+    assert entry["decided_at"] is None
+
+
+def test_get_audit_log_entry_missing_returns_none(test_db):
+    assert db.get_audit_log_entry(99999) is None
+
+
+def test_mark_audit_log_written_updates_status_and_guid(test_db):
+    entry_id = db.insert_audit_log_proposal("create_x", "説明文", "{}")
+
+    db.mark_audit_log_written(entry_id, "guid-abc")
+
+    entry = db.get_audit_log_entry(entry_id)
+    assert entry["status"] == "written"
+    assert entry["result_guid"] == "guid-abc"
+    assert entry["decided_at"] is not None
+
+
+def test_mark_audit_log_failed_updates_status_and_error(test_db):
+    entry_id = db.insert_audit_log_proposal("create_x", "説明文", "{}")
+
+    db.mark_audit_log_failed(entry_id, "接続エラー")
+
+    entry = db.get_audit_log_entry(entry_id)
+    assert entry["status"] == "failed"
+    assert entry["error_message"] == "接続エラー"
+    assert entry["decided_at"] is not None
+
+
+def test_list_audit_log_returns_newest_first(test_db):
+    first_id = db.insert_audit_log_proposal("create_x", "1件目", "{}")
+    second_id = db.insert_audit_log_proposal("create_x", "2件目", "{}")
+
+    entries = db.list_audit_log()
+
+    assert [e["id"] for e in entries] == [second_id, first_id]

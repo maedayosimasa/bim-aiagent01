@@ -59,7 +59,7 @@ BIM空間知能エンジンは以下の順でデータが流れるパイプラ�
 | ⑦ | 解析結果ストア Analysis Results Store | △ | `database/db.py`の`engine_analysis_results`等、履歴を積まないスナップショットのみ |
 | ⑧ | 埋め込み/インデックス層 Embedding & Indexing | △ | `engine/vector_store.py`, ChromaDB |
 | ⑨ | RAG / AIエージェント層 | △ | `agent/`(2026-08-11追加、LangGraph + Claude API)。会話の永続化・ツール呼び出しループはあるが、書き込み系操作は未対応(下記参照) |
-| ⑩ | アクション/操作層 Action & Audit | △ | `archicad_mcp/server.py`の書き込み系ツールはあるが監査ログが無い |
+| ⑩ | アクション/操作層 Action & Audit | △ | `archicad_mcp/server.py`の既存書き込み系ツール(move/delete/set_property)は依然監査ログ無し。2026-08-13追加の高さ制限Mesh書き込み(`engine/height_restriction_write.py`)のみ`database.db`の`write_audit_log`テーブル+提案→承認の2段階フローで監査ログ・承認フローを備える |
 
 横断的関心事(全レイヤーに関わる。現状ほぼ未整備):
 - **API Gateway**: `main.py`(FastAPI)が全レイヤーをRESTとして束ねる。加えて`/mcp`配下にMCPサーバーとしても公開(ローカルLLM/エージェント用ツール口。DNSリバインディング防止は内部通信専用の前提で無効化してある)。
@@ -253,7 +253,16 @@ CLAUDE.md「⑥ 空間知能エンジン」の追加モジュール案は`equipm
 
 ### ⑩ アクション/操作層
 
-- `move_archicad_element`/`delete_archicad_elements`/`set_archicad_property_value`など、実在の建物データを変更する破壊的操作が既にAPIとして露出しているが、誰が/いつ/何を変更したかの監査ログが一切ない。AIエージェント(⑨)が自律的にこれらを呼べるようになった段階で、監査ログと(必要なら)承認フローの追加が必須
+- `move_archicad_element`/`delete_archicad_elements`/`set_archicad_property_value`など、実在の建物データを変更する破壊的操作が既にAPIとして露出しているが、誰が/いつ/何を変更したかの監査ログが一切ない。AIエージェント(⑨)が自律的にこれらを呼べるようになった段階で、監査ログと(必要なら)承認フローの追加が必須(この既存3ツール自体には未対応のまま)
+- **(2026-08-13追加)`engine/height_restriction_write.py`: BIMモデルへ実際に書き込みを行う機能を初めて追加するにあたり、上記の監査ログ・承認フローの前提を満たす形で実装した。** きっかけはユーザーからの「高さ制限に関係する要素を取得して、その高さ制限を示すモルフを作成してBIMモデルに追記できるように。書き込みの際は必ず了解を求め、許可を得てから書き込むように(許可制)」という依頼。
+  - **Morphは作成不可(技術的制約、調査済み)。** Windows側の実ソース(`archicad-mcp/src/tapir/command_definitions.js`)を確認したところ、要素作成コマンドは`CreateColumns`/`CreateSlabs`/`CreateZones`/`CreatePolylines`/`CreateObjects`/`CreateMeshes`の6種類のみで`CreateMorphs`は存在しない。ユーザーに確認の上、代わりにMesh(`CreateMeshes`、既にこのプロジェクトが敷地/道路の表現に使っている要素タイプ)を使うことにした。
+  - `engine/road_slant_envelope.py`: 建築基準法56条1項1号の道路斜線制限を、敷地境界線Zoneの各頂点から前面道路の反対側の境界線(道路Zoneの最小外接矩形の長辺のうち敷地から遠い方、`engine/site.py`の`_estimate_width_and_centerline()`と同じ近似手法)までの水平距離に、用途地域ごとの勾配(住居系1.25/それ以外1.5、`LAND_USE_CATEGORY`環境変数を`effective_daylighting.py`と共有)を乗じて算出する。適用距離は一律20mの固定値(法別表第三は20m〜35mと幅があるが最も保守的な値を採用、`evacuation_walking_distance`の「最も厳しい値」と同じ考え方)。read-only計算のみでArchicadへは一切書き込まない。**既知の限界(disclaimerに明記)**: セットバック緩和・2以上の道路がある場合の緩和・公園等に面する場合の緩和(施行令134条以降)・隣地斜線/北側斜線/天空率による代替緩和は未実装。
+  - `database.db`の`write_audit_log`テーブル(2026-08-13追加、`token_usage`同様履歴を積む方式): status="proposed"(提案のみ)→"written"(承認され書き込み成功)/"failed"(承認され書き込み試行→失敗)の遷移を記録する。
+  - 書き込みは「計算(read-only、`GET /engine/road_slant_envelope`)→提案(`POST /engine/road_slant_envelope/propose`、envelopeをwrite_audit_logへstatus="proposed"として記録するのみでArchicadへは未書き込み、proposal_idを返す)→承認(`POST /engine/road_slant_envelope/approve`、指定proposal_idの提案を取り出し実際にTapirの`CreateMeshes`を呼ぶ。同じ提案の二重承認や存在しないproposal_idはValueErrorにする)」の3段階。承認は人間がfrontend(「高さ制限」タブ、`HeightRestrictionTab.tsx`)から明示的に行う——**このモジュールはAIエージェント(`agent/tools.py`)には公開していない**(監査ログの追加はAIエージェントへの自律的な書き込み権限付与を意味しない、CLAUDE.md「⑨」の既存方針は維持)。
+  - `archicad_mcp/tapir.py`に`create_mesh()`(`CreateMeshes`ラッパー、実データ確認済みの入出力スキーマ: `meshesData[].polygonCoordinates`が`{x,y,z}`のメートル単位フラットリスト、`skirtType`="WithSkirt"で側面を閉じた立体にする、戻り値`{"elements": [{"elementId": {"guid": ...}}]}`は他のCreate*コマンドと共通の形)、`_to_m()`(`_to_mm()`の逆変換)を追加。`archicad_mcp/server.py`に`create_archicad_mesh`(他の書き込み系ツールと同じ薄いラッパー、承認確認は内蔵しない)を追加。
+  - `GET /engine/write_audit_log`(監査ログ一覧、frontend確認用)を追加。
+  - **実データ(bim_cache.db)でpropose段階を確認済み**(Archicadへの実書き込みは未検証——書き込みには実際にArchicad本体との接続が必要で、ユーザーの許可なく実行しないため): 敷地3件(floor_area_ratio/building_coverage_ratioと同じ「敷地」キーワード一致のあいまいさ)それぞれで提案が作成され、高さ範囲0m〜25.0m(適用距離20m×勾配1.25の上限)。
+  - 回帰テストは`tests/test_road_slant_envelope.py`(頂点ごとの高さ計算・適用距離での頭打ち・用途地域ごとの勾配・前面道路/敷地が無い場合の判定不能)、`tests/test_height_restriction_write.py`(提案作成・承認→written・二重承認拒否・失敗時のfailed記録)、`tests/test_tapir.py`(`create_mesh`のmm→m変換・guid抽出)、`tests/test_db.py`(`write_audit_log`のCRUD)、`tests/test_main_endpoints.py`(4エンドポイントの配線)。
 
 ### 横断的関心事
 

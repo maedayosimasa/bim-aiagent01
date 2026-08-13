@@ -11,6 +11,7 @@ import PropertiesTab from "./tabs/PropertiesTab";
 import SpaceViewer3D from "./tabs/SpaceViewer3D";
 import AnalysisSnapshotTab from "./tabs/AnalysisSnapshotTab";
 import UsageTab from "./tabs/UsageTab";
+import HeightRestrictionTab from "./tabs/HeightRestrictionTab";
 
 const TABS = [
   { key: "dashboard", label: "ダッシュボード", Component: Dashboard },
@@ -19,6 +20,7 @@ const TABS = [
   { key: "legal-search", label: "法令検索", Component: LegalSearchTab },
   { key: "agent", label: "AIエージェント", Component: AgentChatTab },
   { key: "legal-report", label: "法規レポート", Component: LegalReportTab },
+  { key: "height-restriction", label: "高さ制限", Component: HeightRestrictionTab },
   { key: "graph", label: "空間関係グラフ", Component: GraphTab },
   { key: "viewer3d", label: "3Dビュー", Component: SpaceViewer3D },
   { key: "analysis-db", label: "解析結果DB", Component: AnalysisSnapshotTab },

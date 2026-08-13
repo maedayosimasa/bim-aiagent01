@@ -160,6 +160,41 @@ def create_tables():
     )
 
 
+    # (2026-08-13追加)Archicad本体への書き込み系操作(engine/height_
+    # restriction_write.py、道路斜線制限のenvelopeをMeshとして作成する機能で
+    # 初めて追加)の監査ログ。CLAUDE.md「⑩ アクション/操作層」が既存の
+    # 書き込み系Tapirラッパー(move_archicad_element等)について「誰が/いつ/
+    # 何を変更したか監査ログが無い」と指摘していた前提を、この機能で初めて
+    # 満たす。statusは"proposed"(提案のみ、Archicadへはまだ未書き込み)→
+    # "written"(承認され実際に書き込み成功)/"failed"(承認され書き込みを
+    # 試みたが失敗)/"rejected"(未使用、将来の明示的却下用に予約)の遷移を
+    # 取る。token_usage同様、履歴を積む(全削除しない)。
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS write_audit_log
+        (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            created_at TEXT NOT NULL,
+
+            action TEXT NOT NULL,
+
+            status TEXT NOT NULL,
+
+            summary TEXT,
+
+            payload_json TEXT,
+
+            result_guid TEXT,
+
+            error_message TEXT,
+
+            decided_at TEXT
+        )
+        """
+    )
+
+
     conn.commit()
 
     conn.close()
@@ -676,6 +711,110 @@ def get_token_usage_by_job():
         GROUP BY kind, job_id
         ORDER BY last_at DESC
         """
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def insert_audit_log_proposal(action, summary, payload_json):
+    """書き込み系操作の提案(まだArchicadへは未書き込み)を1行追加する。
+
+    engine/height_restriction_write.pyのpropose_*()から呼ばれる。
+    statusは"proposed"で作成し、後でmark_audit_log_written()/
+    mark_audit_log_failed()が更新する。新規行のidを返す(承認時に
+    approve_*(proposal_id)へ渡す)。
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO write_audit_log
+        (created_at, action, status, summary, payload_json)
+        VALUES (?, ?, 'proposed', ?, ?)
+        """,
+        (datetime.now(timezone.utc).isoformat(), action, summary, payload_json),
+    )
+
+    conn.commit()
+
+    new_id = cursor.lastrowid
+
+    conn.close()
+
+    return new_id
+
+
+def get_audit_log_entry(entry_id):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM write_audit_log WHERE id = ?", (entry_id,))
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+def mark_audit_log_written(entry_id, result_guid):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE write_audit_log
+        SET status = 'written', result_guid = ?, decided_at = ?
+        WHERE id = ?
+        """,
+        (result_guid, datetime.now(timezone.utc).isoformat(), entry_id),
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+def mark_audit_log_failed(entry_id, error_message):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE write_audit_log
+        SET status = 'failed', error_message = ?, decided_at = ?
+        WHERE id = ?
+        """,
+        (error_message, datetime.now(timezone.utc).isoformat(), entry_id),
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+def list_audit_log(limit=50):
+    """監査ログを新しい順に返す(frontend「監査ログ」表示・確認用)。"""
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM write_audit_log ORDER BY id DESC LIMIT ?", (limit,)
     )
 
     rows = cursor.fetchall()

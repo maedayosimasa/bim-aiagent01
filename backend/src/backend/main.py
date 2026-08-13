@@ -29,6 +29,11 @@ from .engine.rule_engine import (
 from .engine.accessibility import analyze_accessibility
 from .engine.equipment import find_room_equipment
 from .engine.window_classifier import classify_windows
+from .engine.road_slant_envelope import calculate_road_slant_envelope
+from .engine.height_restriction_write import (
+    propose_road_slant_envelope_mesh,
+    approve_road_slant_envelope_mesh,
+)
 from .database.db import create_tables
 from .database.db import insert_element
 from mcp.server.transport_security import TransportSecuritySettings
@@ -177,6 +182,10 @@ class MoveElementRequest(BaseModel):
 
 class DeleteArchicadElementsRequest(BaseModel):
     guids: list[str]
+
+
+class ApproveRoadSlantEnvelopeRequest(BaseModel):
+    proposal_id: int
 
 
 class FocusArchicadElementsRequest(BaseModel):
@@ -438,6 +447,61 @@ def engine_windows():
     # 示す属性が無いため、ドアの外部判定と同じ次数ベースのヒューリスティック)。
 
     return classify_windows()
+
+
+# ==============================
+# 道路斜線制限 envelope の可視化(2026-08-13追加)
+# 建築基準法56条1項1号の道路斜線制限を幾何的に近似し(engine/
+# road_slant_envelope.py)、承認制でArchicad本体へMeshとして書き込む
+# (engine/height_restriction_write.py)。書き込みは「計算(read-only)→
+# 提案(監査ログへproposedとして記録、Archicadへは未書き込み)→承認
+# (実際にArchicadへ書き込み)」の3段階で、承認は人間がfrontendから明示的に
+# 行う(AIエージェントには公開していない)。
+# ==============================
+
+@app.get("/engine/road_slant_envelope")
+def engine_road_slant_envelope(land_use_category: str | None = None):
+    # 提案・監査ログへの記録を伴わない、純粋な計算結果のプレビュー。
+
+    try:
+        return calculate_road_slant_envelope(land_use_category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/engine/road_slant_envelope/propose")
+def engine_road_slant_envelope_propose(land_use_category: str | None = None):
+    # envelopeを計算し、write_audit_logへstatus="proposed"として記録する
+    # (Archicadへはまだ一切書き込まない)。返却されるproposal_idを
+    # /approveへ渡すことで初めて実際の書き込みが行われる。
+
+    try:
+        return propose_road_slant_envelope_mesh(land_use_category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/engine/road_slant_envelope/approve")
+async def engine_road_slant_envelope_approve(data: ApproveRoadSlantEnvelopeRequest):
+    # 指定proposal_idの提案を承認し、実際にArchicad本体へMeshを書き込む
+    # (破壊的操作)。未承認(status="proposed")の提案のみ実行できる——
+    # 既に処理済みの提案を指定した場合や存在しないproposal_idはValueErrorに
+    # なる(engine/height_restriction_write.py参照)。
+
+    try:
+        return await _run_archicad_action(
+            approve_road_slant_envelope_mesh(data.proposal_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/engine/write_audit_log")
+def engine_write_audit_log(limit: int = 50):
+    # Archicad本体への書き込み系操作の監査ログ(誰が/いつ/何を、
+    # database.db.write_audit_log参照)。frontendの確認・履歴表示用。
+
+    return [dict(row) for row in db_module.list_audit_log(limit)]
 
 
 # ==============================

@@ -195,6 +195,87 @@ def test_engine_equipment_endpoint(api_client, sample_elements):
     assert "unplaced_equipment" in body
 
 
+def test_engine_road_slant_envelope_endpoint(api_client, test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    test_db.insert_element(
+        "road1", "Zone", "前面道路",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[-1000, -4000], [11000, -4000], [11000, 0], [-1000, 0]]}),
+    )
+
+    response = api_client.get("/engine/road_slant_envelope")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["resolved"] is True
+    assert body[0]["gradient"] == 1.25
+
+
+def test_engine_road_slant_envelope_endpoint_400_for_unknown_land_use(api_client, test_db):
+    response = api_client.get("/engine/road_slant_envelope?land_use_category=nope")
+
+    assert response.status_code == 400
+
+
+def test_engine_road_slant_envelope_propose_endpoint_creates_audit_log(api_client, test_db, monkeypatch):
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    test_db.insert_element(
+        "road1", "Zone", "前面道路",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[-1000, -4000], [11000, -4000], [11000, 0], [-1000, 0]]}),
+    )
+
+    response = api_client.post("/engine/road_slant_envelope/propose")
+
+    assert response.status_code == 200
+    proposals = response.json()["proposals"]
+    assert len(proposals) == 1
+
+    audit_response = api_client.get("/engine/write_audit_log")
+    assert audit_response.status_code == 200
+    entries = audit_response.json()
+    assert len(entries) == 1
+    assert entries[0]["status"] == "proposed"
+
+
+def test_engine_road_slant_envelope_approve_endpoint_calls_write_flow(api_client, monkeypatch):
+    from backend import main as main_module
+
+    async def fake_approve(proposal_id):
+        assert proposal_id == 42
+        return {"proposal_id": 42, "result_guid": "guid-xyz", "raw_result": {}}
+
+    monkeypatch.setattr(main_module, "approve_road_slant_envelope_mesh", fake_approve)
+
+    response = api_client.post("/engine/road_slant_envelope/approve", json={"proposal_id": 42})
+
+    assert response.status_code == 200
+    assert response.json()["result_guid"] == "guid-xyz"
+
+
+def test_engine_road_slant_envelope_approve_endpoint_400_for_invalid_proposal(api_client, monkeypatch):
+    from backend import main as main_module
+
+    async def fake_approve(proposal_id):
+        raise ValueError(f"存在しない提案IDです: {proposal_id}")
+
+    monkeypatch.setattr(main_module, "approve_road_slant_envelope_mesh", fake_approve)
+
+    response = api_client.post("/engine/road_slant_envelope/approve", json={"proposal_id": 99999})
+
+    assert response.status_code == 400
+
+
 def test_engine_analysis_snapshot_endpoint(api_client, test_db):
     response = api_client.get("/engine/analysis_snapshot")
 
