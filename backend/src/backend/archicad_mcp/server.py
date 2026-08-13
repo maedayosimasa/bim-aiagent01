@@ -249,17 +249,36 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         )
         synced += 1
 
-        if matches_zone_keyword(element_type, name, archicad_id, layer_name, "敷地"):
+        # (2026-08-14実データ調査で修正)matches_zone_keyword()のarchicad_id/
+        # layer_name照合はMesh限定(敷地境界線の幾何取得という別の用途向けの
+        # 制約)だが、実データでは"Object"型要素にもarchicad_id="敷地"が
+        # 付けられているケースを確認した。法条件プロパティの取得は幾何を
+        # 使わないため型を問わず広く拾う(見逃しよりも過検出を許容する)。
+        is_site_marker = (
+            matches_zone_keyword(element_type, name, archicad_id, layer_name, "敷地")
+            or (archicad_id and "敷地" in archicad_id)
+            or (layer_name and "敷地" in layer_name)
+        )
+        if is_site_marker:
             site_guids.append(guid)
 
-    await _sync_legal_condition_properties(site_guids)
+    legal_conditions_synced = await _sync_legal_condition_properties(site_guids)
 
-    return {"synced": synced, "requested": len(guids)}
+    return {
+        "synced": synced,
+        "requested": len(guids),
+        "legal_conditions_synced": legal_conditions_synced,
+    }
 
 
-async def _sync_legal_condition_properties(site_guids: list[str]) -> None:
+async def _sync_legal_condition_properties(site_guids: list[str]) -> dict:
     """敷地ZoneのArchicadカスタムProperty(建蔽率・容積率・前面道路幅等)を
     取得し、properties.legal_conditionsとして保存する。
+
+    戻り値は{guid: {プロパティ名: 値}}(実際に見つかった内容をsync_from_
+    archicad()の戻り値経由でそのまま確認できるようにする診断用の情報、
+    2026-08-14追加——プロパティ名の照合キーワードが実際のArchicad側の
+    表記と一致しているかを、SQLiteキャッシュを直接見なくても確認できる)。
 
     (2026-08-14追加)engine/legal_inputs.pyが以前「今後の課題」としていた
     カスタムProperty未対応のギャップに対応する——ユーザーが実際に敷地Zoneの
@@ -272,7 +291,7 @@ async def _sync_legal_condition_properties(site_guids: list[str]) -> None:
     自体を呼ばない、無駄なArchicad呼び出しを避けるため)。
     """
     if not site_guids:
-        return
+        return {}
 
     all_properties = await tapir.list_properties()
     keywords = [kw for kws in ARCHICAD_LEGAL_PROPERTY_KEYWORDS.values() for kw in kws]
@@ -283,22 +302,43 @@ async def _sync_legal_condition_properties(site_guids: list[str]) -> None:
     ]
 
     if not matched_properties:
-        return
+        return {}
 
     property_guids = [prop["propertyId"]["guid"] for prop in matched_properties]
     property_names = [prop.get("propertyName") for prop in matched_properties]
 
     values_by_element = await tapir.get_property_values(site_guids, property_guids)
 
-    for guid, values in zip(site_guids, values_by_element):
+    legal_conditions_by_guid: dict = {}
+
+    for guid, element_result in zip(site_guids, values_by_element):
+        # (2026-08-14実データで発覚・修正)propertyValuesForElementsの各要素は
+        # 素の配列ではなく{"propertyValues": [...]}というオブジェクト
+        # (PropertyValuesOrError、common_schema_definitions.js確認済み)。
+        # 要素自体が見つからない等の場合は{"error": {...}}になる。この
+        # ラップを見落とし、直接zip()していたため要素の辞書キー("propertyValues"
+        # という文字列自体)がvalue_itemに入り込み、AttributeErrorで
+        # クラッシュしていた(実データでの実行で発覚)。
+        if "error" in element_result:
+            continue
+
+        property_value_items = element_result.get("propertyValues", [])
+
         legal_conditions = {}
-        for property_name, value_item in zip(property_names, values):
+        for property_name, value_item in zip(property_names, property_value_items):
+            # 個々のプロパティも同様にPropertyValueOrError(oneOf)で、
+            # 未設定・取得不可の場合は{"error": {...}}になりうる。
+            if "error" in value_item:
+                continue
             value = (value_item.get("propertyValue") or {}).get("value")
             if value is not None:
                 legal_conditions[property_name] = value
 
         if legal_conditions:
             db.update_element_properties(guid, {"legal_conditions": legal_conditions})
+            legal_conditions_by_guid[guid] = legal_conditions
+
+    return legal_conditions_by_guid
 
 
 @mcp_server.tool()

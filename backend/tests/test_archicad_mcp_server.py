@@ -126,7 +126,12 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
     result = call_mcp_tool("sync_from_archicad", {"limit": 10})
 
     payload = _payload(result)
-    assert payload == {"synced": 2, "requested": 2}
+    assert payload["synced"] == 2
+    assert payload["requested"] == 2
+    # _make_fake_tapir_server()には"敷地"に一致する要素も「法条件」プロパティも
+    # 無いため、legal_conditions_syncedは空({}要素それぞれの敷地判定ロジックは
+    # test_sync_from_archicad_tool_populates_legal_conditions_for_site_zone参照)。
+    assert payload["legal_conditions_synced"] == {}
 
     wall = db.get_element("guid-1")
     assert wall["type"] == "Wall"
@@ -325,13 +330,19 @@ def test_sync_from_archicad_tool_populates_legal_conditions_for_site_zone(test_d
 
     @fake_server.tool(name="GetPropertyValuesOfElements")
     def get_property_values(input) -> dict:
+        # propertyValuesForElementsの各要素は{"propertyValues": [...]}という
+        # オブジェクト(PropertyValuesOrError)であり、素の配列ではない
+        # (archicad_mcp/tapir.pyのモジュールdocstring参照、実データでの
+        # クラッシュを機に2026-08-14に修正)。
         return {
             "propertyValuesForElements": [
-                [
-                    {"propertyValue": {"type": "string", "status": "normal", "value": "60"}},
-                    {"propertyValue": {"type": "string", "status": "normal", "value": "200"}},
-                    {"propertyValue": {"type": "string", "status": "normal", "value": "6.0"}},
-                ]
+                {
+                    "propertyValues": [
+                        {"propertyValue": {"value": "60"}},
+                        {"propertyValue": {"value": "200"}},
+                        {"propertyValue": {"value": "6.0"}},
+                    ]
+                }
             ]
         }
 
@@ -340,8 +351,16 @@ def test_sync_from_archicad_tool_populates_legal_conditions_for_site_zone(test_d
     )
 
     result = call_mcp_tool("sync_from_archicad", {"limit": 10})
+    payload = _payload(result)
 
-    assert _payload(result) == {"synced": 1, "requested": 1}
+    assert payload["synced"] == 1
+    assert payload["requested"] == 1
+    # sync_from_archicad()の戻り値からも、実際に取得できたlegal_conditionsを
+    # 直接確認できる(2026-08-14追加、SQLiteキャッシュを見なくても照合キー
+    # ワードが実際のプロパティ名と一致しているかを確認できる診断用の情報)。
+    assert payload["legal_conditions_synced"] == {
+        "site-guid": {"建蔽率": "60", "容積率": "200", "前面道路幅": "6.0"}
+    }
 
     site = db.get_element("site-guid")
     properties = json.loads(site["properties"])
@@ -350,6 +369,71 @@ def test_sync_from_archicad_tool_populates_legal_conditions_for_site_zone(test_d
         "容積率": "200",
         "前面道路幅": "6.0",
     }
+
+
+def test_sync_from_archicad_tool_detects_site_marker_on_object_type(test_db, monkeypatch):
+    # (2026-08-14実データ調査で発見・修正)実データには"Object"型要素に
+    # archicad_id="敷地"が付けられているケースがあった。matches_zone_keyword()
+    # のarchicad_id照合はMesh限定(敷地境界線の幾何取得という別用途向けの
+    # 制約)のため、以前はこのObject要素が法条件プロパティの取得対象から
+    # 漏れていた。型を問わずarchicad_id/layer_nameで拾えることを確認する。
+    from mcp.server.mcpserver import MCPServer
+
+    fake_server = MCPServer(name="fake-tapir-object-site-marker")
+
+    @fake_server.tool(name="GetAllElements")
+    def get_all_elements(input) -> dict:
+        return {"elements": [{"elementId": {"guid": "obj-guid"}}]}
+
+    @fake_server.tool(name="GetDetailsOfElements")
+    def get_details_of_elements(input) -> dict:
+        return {
+            "detailsOfElements": [
+                {
+                    "type": "Object",
+                    "id": "敷地",
+                    "floorIndex": 0,
+                    "layerIndex": 0,
+                    "drawIndex": 0,
+                    "details": {},
+                },
+            ]
+        }
+
+    @fake_server.tool(name="Get3DBoundingBoxes")
+    def get_bounding_boxes(input) -> dict:
+        return {"boundingBoxes3D": [{"boundingBox3D": {
+            "xMin": 0, "yMin": 0, "zMin": 0, "xMax": 1, "yMax": 1, "zMax": 1,
+        }}]}
+
+    @fake_server.tool(name="GetAttributesByType")
+    def get_attributes_by_type(input) -> dict:
+        return {"attributes": []}
+
+    @fake_server.tool(name="GetAllProperties")
+    def get_all_properties(input) -> dict:
+        return {
+            "properties": [
+                {"propertyId": {"guid": "prop-kenpei"}, "propertyGroupName": "法条件", "propertyName": "建蔽率"},
+            ]
+        }
+
+    @fake_server.tool(name="GetPropertyValuesOfElements")
+    def get_property_values(input) -> dict:
+        return {
+            "propertyValuesForElements": [
+                {"propertyValues": [{"propertyValue": {"value": "60"}}]},
+            ]
+        }
+
+    monkeypatch.setattr(
+        archicad_client, "_default_transport", lambda: InMemoryTransport(fake_server)
+    )
+
+    result = call_mcp_tool("sync_from_archicad", {"limit": 10})
+    payload = _payload(result)
+
+    assert payload["legal_conditions_synced"] == {"obj-guid": {"建蔽率": "60"}}
 
 
 def test_update_element_geometry_tool_missing_guid_is_error(test_db):

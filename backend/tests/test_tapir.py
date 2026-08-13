@@ -189,17 +189,18 @@ def _make_fake_tapir_server():
 
     @server.tool(name="GetPropertyValuesOfElements")
     def get_property_values_of_elements(input) -> dict:
+        # (2026-08-14修正)propertyValuesForElementsの各要素はPropertyValuesOrError
+        # (oneOf {"propertyValues": [...]} | {"error": {...}})であり、素の配列
+        # ではない。以前のバージョンはこのラップを見落としており、実データでの
+        # 実行時にAttributeErrorでクラッシュしていた
+        # (archicad_mcp/tapir.pyのモジュールdocstring参照)。
         return {
             "propertyValuesForElements": [
-                [
-                    {
-                        "propertyValue": {
-                            "type": "string",
-                            "status": "normal",
-                            "value": "Wall A",
-                        }
-                    }
-                ]
+                {
+                    "propertyValues": [
+                        {"propertyValue": {"value": "Wall A"}}
+                    ]
+                }
             ]
         }
 
@@ -412,7 +413,7 @@ def test_get_property_values():
         tapir.get_property_values(["guid-1"], ["prop-1"], transport=transport)
     )
 
-    assert values[0][0]["propertyValue"]["value"] == "Wall A"
+    assert values[0]["propertyValues"][0]["propertyValue"]["value"] == "Wall A"
 
 
 def test_set_property_value():

@@ -50,10 +50,21 @@ guessed. Notably:
 - MoveElements takes a *relative* vector (elementsWithMoveVectors), not an
   absolute position - it cannot be used to implement "set to this exact
   geometry".
-- SetPropertyValuesOfElements accepts propertyValue as the simplified
-  {"value": "<display string>"} form; GetPropertyValuesOfElements returns
-  the fuller typed union (NormalStringPropertyValue etc.) - this module
-  returns that raw structure rather than guessing a normalized shape.
+- SetPropertyValuesOfElements accepts propertyValue as {"value": "<display
+  string>"} (symmetric with GET, both $ref the same PropertyValue schema).
+  GetPropertyValuesOfElements's real response (confirmed against
+  common_schema_definitions.js on 2026-08-14 after a production crash - an
+  earlier version of this module assumed a bare list-of-dicts shape that
+  was never actually verified against real Archicad) is
+  propertyValuesForElements: array of PropertyValuesOrError (oneOf
+  {"propertyValues": [...]} | {"error": {...}}), one per requested element
+  - NOT a bare array. Each item in that inner "propertyValues" array is
+  itself PropertyValueOrError (oneOf {"propertyValue": {"value": "..."}} |
+  {"error": {...}}), one per requested property. Both "error" branches
+  (whole-element and per-property) must be checked before unwrapping - see
+  archicad_mcp/server.py's _sync_legal_condition_properties() for the
+  parsing pattern. This module still returns the raw structure rather than
+  guessing a normalized shape - callers must unwrap both levels themselves.
 """
 
 import json

@@ -216,7 +216,9 @@ LEGAL_INPUT_DEFINITIONS: dict[str, LegalInputDefinition] = {
 # sync_from_archicad()がこのキーワード集合でプロパティ名を検索し、一致した
 # ものをproperties.legal_conditionsとして敷地Zoneに保存する。
 ARCHICAD_LEGAL_PROPERTY_KEYWORDS: dict[str, list[str]] = {
-    "kenpei_ritsu": ["建蔽率"],
+    # (2026-08-14実データ調査で追加)"建蔽率"は実務上「建ぺい率」(かな混じり)
+    # と表記されることも多いため、両方を対象にする(見逃しを避ける)。
+    "kenpei_ritsu": ["建蔽率", "建ぺい率"],
     "yoseki_ritsu": ["容積率"],
     "douro_haba": ["前面道路幅", "道路幅員"],
 }
@@ -244,14 +246,19 @@ def _resolve_from_site_properties(key: str) -> str | None:
 
     ARCHICAD_LEGAL_PROPERTY_KEYWORDSに未登録のkey、または一度も同期して
     いない・敷地Zoneが見つからない・該当プロパティが未設定の場合はNone。
+
+    (2026-08-14実データ調査で修正)以前は要素タイプをZone/Room/Meshに
+    限定していたが、実データで敷地の目印がObject型要素(archicad_id="敷地")
+    にも付けられているケースを確認した。legal_conditionsはsync_from_
+    archicad()が敷地と判定した要素にしか設定されないため、ここで改めて
+    型を絞り込む意味は無い(絞り込み自体が見逃しの原因だった)——全要素の
+    legal_conditionsをそのまま確認する。
     """
     keywords = ARCHICAD_LEGAL_PROPERTY_KEYWORDS.get(key)
     if not keywords:
         return None
 
     for element in get_elements():
-        if element["type"] not in ("Zone", "Room", "Mesh"):
-            continue
         try:
             properties = json.loads(element["properties"] or "{}")
         except (TypeError, json.JSONDecodeError):

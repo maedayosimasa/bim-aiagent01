@@ -19,7 +19,10 @@ def test_sync_endpoint_populates_cache(api_client, fake_archicad):
     response = api_client.post("/archicad/sync", json={"limit": 10})
 
     assert response.status_code == 200
-    assert response.json() == {"synced": 2, "requested": 2}
+    body = response.json()
+    assert body["synced"] == 2
+    assert body["requested"] == 2
+    assert body["legal_conditions_synced"] == {}
 
     wall = db.get_element("guid-1")
     assert wall["type"] == "Wall"
@@ -40,7 +43,7 @@ def test_property_values_endpoint(api_client, fake_archicad):
     )
 
     assert response.status_code == 200
-    assert response.json()[0][0]["propertyValue"]["value"] == "Wall A"
+    assert response.json()[0]["propertyValues"][0]["propertyValue"]["value"] == "Wall A"
 
 
 def test_set_property_endpoint(api_client, fake_archicad):
