@@ -171,3 +171,14 @@ def _reset_legal_connection_override():
     legal_client.set_connection_url(None)
     yield
     legal_client.set_connection_url(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_legal_local_process():
+    # legal_mcp.local_process も起動したサブプロセスのハンドルを
+    # モジュールレベルで保持する。テスト間でリークしないようにする。
+    from backend.legal_mcp import local_process as legal_local_process
+
+    legal_local_process._process = None
+    yield
+    legal_local_process._process = None

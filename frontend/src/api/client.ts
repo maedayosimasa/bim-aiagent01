@@ -298,6 +298,40 @@ export function getLegalStatus() {
   return get<LegalApiStatus>("/legal/status");
 }
 
+export type LegalConnectionInfo = {
+  active_url: string | null;
+  overridden: boolean;
+  env_default: string | null;
+  local_preset_url: string;
+};
+
+// Legal Knowledge Builderをbackendと同じホスト上でローカル起動する
+// (legal_mcp/local_process.py)。Archicad連携のWindows側ブリッジと違い、
+// backendプロセスと同じホストで動く前提の別プロセスなのでbackend側から
+// 起動できる(main.py `POST /legal/start_server`のdocstring参照)。
+
+export type LegalStartServerResult = {
+  started: boolean;
+  already_running: boolean;
+  pid: number | null;
+  log_path?: string;
+  connection: LegalConnectionInfo;
+};
+
+export type LegalLocalProcessStatus = {
+  process_alive: boolean;
+  pid: number | null;
+  repo_dir: string | null;
+};
+
+export function startLegalKnowledgeBuilder() {
+  return post<LegalStartServerResult>("/legal/start_server");
+}
+
+export function getLegalStartServerStatus() {
+  return get<LegalLocalProcessStatus>("/legal/start_server/status");
+}
+
 // rule_graph / reference_graph(検索結果1件ごとの詳細表示用)。
 // バックエンドのモデル(legal_knowledge_builder.models.rule/.reference)に対応。
 

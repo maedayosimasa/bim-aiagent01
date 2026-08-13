@@ -48,6 +48,7 @@ from .archicad_mcp.server import (
 )
 from .archicad_mcp import client as archicad_client
 from .legal_mcp import client as legal_client
+from .legal_mcp import local_process as legal_local_process
 
 
 def _load_dotenv_if_present() -> None:
@@ -648,6 +649,34 @@ async def set_legal_connection(data: ConnectionRequest):
         "connection": legal_client.get_connection_info(),
         "status": await legal_client.check_connection(),
     }
+
+
+@app.post("/legal/start_server")
+def legal_start_server():
+    # Legal Knowledge Builder(~/Legal Knowledge Builder/)をbackendと同じホスト上で
+    # サブプロセスとして起動する。Archicad連携のWindows側ブリッジと違い、
+    # backendプロセスと同じホストで動く前提のローカル開発用の別プロセスなので
+    # (legal_mcp/local_process.pyのモジュールdocstring参照)、リモートコード
+    # 実行にはならない。起動コマンドは固定でユーザー入力を含まない。
+
+    try:
+        result = legal_local_process.start_server()
+    except legal_local_process.LocalServerNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # LEGAL_API_URLが未設定の場合、ローカル起動した以上はそのプリセットURLに
+    # 接続を合わせておく(セットで使う想定なので、起動後にURLを別途手動設定
+    # させない)。既に何か設定/選択されている場合は上書きしない。
+    if not legal_client.is_configured():
+        legal_client.set_connection_url(legal_client.LOCAL_PRESET_URL)
+
+    result["connection"] = legal_client.get_connection_info()
+    return result
+
+
+@app.get("/legal/start_server/status")
+def legal_start_server_status():
+    return legal_local_process.get_status()
 
 
 @app.get("/legal/laws")

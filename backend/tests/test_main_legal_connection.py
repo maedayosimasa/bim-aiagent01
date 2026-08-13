@@ -58,3 +58,80 @@ def test_status_not_configured(api_client, monkeypatch):
     body = response.json()
     assert body["configured"] is False
     assert body["reachable"] is False
+
+
+class _FakePopen:
+    def __init__(self, pid=12345):
+        self.pid = pid
+
+    def poll(self):
+        return None
+
+
+def test_start_server_endpoint_spawns_and_sets_local_connection(
+    api_client, monkeypatch, tmp_path
+):
+    from backend.legal_mcp import local_process as legal_local_process
+
+    repo = tmp_path / "Legal Knowledge Builder"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname = \"x\"\n")
+    monkeypatch.setenv("LEGAL_KNOWLEDGE_BUILDER_DIR", str(repo))
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    monkeypatch.setattr(
+        legal_local_process.subprocess, "Popen", lambda cmd, **kwargs: _FakePopen()
+    )
+
+    response = api_client.post("/legal/start_server")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["started"] is True
+    assert body["pid"] == 12345
+    # LEGAL_API_URLが未設定だったので、ローカルプリセットに自動で合わせる
+    # (セットで使う想定のため、起動後に別途接続先を手動設定させない)。
+    assert body["connection"]["active_url"] == "http://127.0.0.1:8100"
+
+
+def test_start_server_endpoint_does_not_override_existing_connection(
+    api_client, monkeypatch, tmp_path
+):
+    from backend.legal_mcp import local_process as legal_local_process
+
+    repo = tmp_path / "Legal Knowledge Builder"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname = \"x\"\n")
+    monkeypatch.setenv("LEGAL_KNOWLEDGE_BUILDER_DIR", str(repo))
+    monkeypatch.setattr(
+        legal_local_process.subprocess, "Popen", lambda cmd, **kwargs: _FakePopen()
+    )
+
+    api_client.post("/legal/connection", json={"url": "https://legal.example.invalid"})
+
+    response = api_client.post("/legal/start_server")
+
+    body = response.json()
+    assert body["connection"]["active_url"] == "https://legal.example.invalid"
+
+
+def test_start_server_endpoint_404_repo_missing_returns_400(api_client, monkeypatch, tmp_path):
+    monkeypatch.setenv("LEGAL_KNOWLEDGE_BUILDER_DIR", str(tmp_path / "nope"))
+
+    response = api_client.post("/legal/start_server")
+
+    assert response.status_code == 400
+    assert "見つかりません" in response.json()["detail"]
+
+
+def test_start_server_status_endpoint(api_client, monkeypatch, tmp_path):
+    repo = tmp_path / "Legal Knowledge Builder"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname = \"x\"\n")
+    monkeypatch.setenv("LEGAL_KNOWLEDGE_BUILDER_DIR", str(repo))
+
+    response = api_client.get("/legal/start_server/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["process_alive"] is False
+    assert body["repo_dir"] == str(repo)
