@@ -111,6 +111,21 @@ def _refine_door_room_connections(elements, relations):
     判定でヒットしてしまう(実データで発覚: あるドアのプローブ点が、
     "MB"や"共用廊下"など複数階にまたがる同名Zoneすべてに"contains"=True
     となっていた)。
+
+    (2026-08-14修正)置き換え後の"connects"のdistanceは、以前は一律
+    0.0mm(点-in-ポリゴン判定は真偽のみで距離を持たないための単なる
+    プレースホルダー値)だった。これがそのままgraph/path.py(避難経路の
+    最短路探索、重みは"distance")・evacuation_engine.pyの避難歩行距離
+    計算に流用されており、経路が何ホップであってもRoom-Door "connects"
+    エッジが全て0.0mmのため合計距離が常に0mになる(=歩行距離チェックが
+    実質何も計算していないのと同じ)不具合をユーザーからの指摘
+    (「歩行距離が0mで合格は計算されていないのでは」)で実データにより
+    確認した。ドアの代表点(geometryの重心)から部屋ポリゴンへの
+    Hausdorff距離(`Point.hausdorff_distance(Polygon)`、点から見て
+    ポリゴン内で最も遠い点までの距離)を計算し直すことで、「その部屋の
+    最も奥まった場所からこのドアまでの距離」という歩行距離制限の法令上の
+    定義(建築基準法施行令120条、居室の各部分から出口までの歩行距離)に
+    近い近似値にした。
     """
 
     doors = [element for element in elements if element["type"] == "Door"]
@@ -154,6 +169,20 @@ def _refine_door_room_connections(elements, relations):
     if not refined_room_guids:
         return relations
 
+    room_geom_by_guid = {
+        room_guid: geom
+        for records in room_records_by_floor.values()
+        for room_guid, geom in records
+    }
+
+    door_point_by_guid = {}
+    for door in doors:
+        try:
+            geom, _ = parse_geometry(door["geometry"])
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+        door_point_by_guid[door["guid"]] = geom.centroid
+
     room_types = {"Zone", "Room"}
     elements_by_guid = {element["guid"]: element["type"] for element in elements}
 
@@ -178,12 +207,19 @@ def _refine_door_room_connections(elements, relations):
     ]
 
     for door_guid, room_guids in refined_room_guids.items():
+        door_point = door_point_by_guid.get(door_guid)
         for room_guid in room_guids:
+            room_geom = room_geom_by_guid.get(room_guid)
+            distance = (
+                door_point.hausdorff_distance(room_geom)
+                if door_point is not None and room_geom is not None
+                else 0.0
+            )
             relations.append({
                 "source_guid": door_guid,
                 "target_guid": room_guid,
                 "relation": "connects",
-                "distance": 0.0,
+                "distance": distance,
             })
 
     return relations

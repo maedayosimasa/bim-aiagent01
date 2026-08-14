@@ -44,6 +44,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from ..database.db import get_elements
 from ..legal_mcp import client as legal_client
 from .adjacent_boundary_slant_envelope import calculate_adjacent_boundary_slant_compliance
 from .building_coverage import calculate_building_coverage_ratio
@@ -311,6 +312,26 @@ def _resolve_threshold(rule: LegalRule) -> float:
         ) from exc
 
 
+def _floor_index_by_guid() -> dict[str, int | None]:
+    """全要素のguid→floorIndexの対応表を返す(evaluate_legal_rule()が
+    各判定項目に階数を添付するために使う)。
+
+    (2026-08-14追加)ユーザーから「歩行距離が0mで合格になっているのは
+    計算されていないのでは」との指摘を受けて避難歩行距離の距離計算自体を
+    修正した際、あわせて「対象の階数も表示してほしい」との依頼があった。
+    どのチェックのtarget_guidも(敷地Zoneも含め)floorIndexを持つ要素を
+    指すため、check関数ごとに個別対応するのではなくここで一括して解決する。
+    """
+    result: dict[str, int | None] = {}
+    for element in get_elements():
+        try:
+            properties = json.loads(element["properties"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            properties = {}
+        result[element["guid"]] = properties.get("floorIndex")
+    return result
+
+
 async def evaluate_legal_rule(rule: LegalRule) -> dict:
     # BIMデータからは判定できない法規条件(用途地域等)が不足している場合、
     # check関数を呼ばずに「何が足りないか」を返す。UNKNOWN(BIM実測値が
@@ -343,11 +364,14 @@ async def evaluate_legal_rule(rule: LegalRule) -> dict:
         await _legal_sources_for_concept(rule.concept_id), EvidenceConfidence.CANDIDATE
     )
 
+    floor_index_by_guid = _floor_index_by_guid()
+
     items = tag_evidence(
         [
             {
                 "target_guid": m["target_guid"],
                 "target_name": m.get("target_name"),
+                "floor_index": floor_index_by_guid.get(m["target_guid"]),
                 "status": _status_for(m["measured_value"], rule.verification.comparator, threshold).value,
                 "measured_value": m["measured_value"],
                 "unit": rule.verification.unit,

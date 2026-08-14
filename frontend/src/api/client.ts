@@ -543,6 +543,10 @@ export type LegalReportStatus = "pass" | "fail" | "unknown" | "not_applicable";
 export type LegalReportItem = {
   target_guid: string;
   target_name: string | null;
+  // (2026-08-14追加)対象要素のフロア(properties.floorIndex)。
+  // ユーザーから「対象の階数も表示できるように」との依頼を受けて追加
+  // (engine/rule_engine.pyのevaluate_legal_rule()が全チェック共通で解決する)。
+  floor_index: number | null;
   status: LegalReportStatus;
   measured_value: number | null;
   unit: string | null;

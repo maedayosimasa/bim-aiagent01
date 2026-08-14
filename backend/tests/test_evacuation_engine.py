@@ -114,3 +114,36 @@ def test_compute_evacuation_walking_distances_converts_mm_to_m(test_db):
     # 到達不能な部屋は「歩行距離が長すぎる」ではなく判定不能(None)にする。
     assert by_guid["room3"]["measured_value"] is None
     assert by_guid["room3"]["evidence"]["reachable"] is False
+
+
+def test_compute_evacuation_walking_distances_nonzero_with_owner_wall_doors(test_db):
+    # (2026-08-14修正)実データのドアはowner壁情報を持ち、graph/relation.py
+    # の_refine_door_room_connections()によるRoom-Door "connects"精密化の
+    # 対象になる。以前はこの経路のdistanceが一律0.0mmにハードコードされて
+    # おり、到達可能な部屋は経路の長さに関わらず歩行距離が常に0mになる
+    # 不具合があった(ユーザーからの指摘で発覚)。owner壁情報ありのドアで、
+    # 到達可能な部屋の歩行距離が0より大きいことを確認する。
+    test_db.insert_element(
+        "wall1", "Wall", "壁",
+        json.dumps({"archicad_details": {"begThickness": 0.2, "endThickness": 0.2}}),
+        json.dumps({"type": "line", "points": [[4000, 0], [4000, 3000]]}),
+    )
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [4000, 0], [4000, 3000], [0, 3000]]}),
+    )
+    test_db.insert_element(
+        "door1", "Door", "外部ドア",
+        json.dumps({"archicad_details": {
+            "ownerElementType": "Wall",
+            "ownerElementId": {"guid": "wall1"},
+        }}),
+        json.dumps({"type": "point", "x": 4000, "y": 1500}),
+    )
+
+    items = compute_evacuation_walking_distances()
+    by_guid = {i["target_guid"]: i for i in items}
+
+    assert by_guid["room1"]["evidence"]["reachable"] is True
+    assert by_guid["room1"]["measured_value"] > 0

@@ -172,6 +172,41 @@ def test_run_daylighting_check_structures_result(test_db, monkeypatch):
     assert item["evidence_confidence"] == "deterministic"
 
 
+def test_evaluate_legal_rule_attaches_floor_index_from_target_element(test_db, monkeypatch):
+    # (2026-08-14追加)ユーザーから「対象の階数も表示できるように」との
+    # 依頼を受け、evaluate_legal_rule()が各項目にtarget_guidの
+    # properties.floorIndexを添付するようにした。チェックの種類ごとに
+    # 個別対応するのではなく共通経路(_floor_index_by_guid())で解決される
+    # ことを確認する。
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({"floorIndex": 2}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 5000], [0, 5000]]}),
+    )
+
+    result = asyncio.run(rule_engine.run_daylighting_check())
+
+    assert result["items"][0]["floor_index"] == 2
+
+
+def test_evaluate_legal_rule_floor_index_none_when_missing(test_db, monkeypatch):
+    monkeypatch.delenv("LEGAL_API_URL", raising=False)
+    legal_client.set_connection_url(None)
+
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 5000], [0, 5000]]}),
+    )
+
+    result = asyncio.run(rule_engine.run_daylighting_check())
+
+    assert result["items"][0]["floor_index"] is None
+
+
 def test_evaluate_legal_rule_by_id_raises_for_unknown_rule():
     try:
         asyncio.run(rule_engine.evaluate_legal_rule_by_id("does_not_exist"))

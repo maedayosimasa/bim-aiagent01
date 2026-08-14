@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from backend.graph.relation import (
     determine_relation,
     calculate_relations,
@@ -312,6 +314,53 @@ def test_calculate_relations_refines_door_room_connections_using_owner_wall(test
     }
 
     assert door_connects == {"room1", "room2"}
+
+
+def test_calculate_relations_refined_door_room_distance_is_not_hardcoded_zero(test_db):
+    # (2026-08-14修正)owner壁ベースで精密化されたRoom-Door "connects"の
+    # distanceは、以前は判定が真偽のみであることの単なるプレースホルダー
+    # として一律0.0mmになっていた。これがgraph/path.pyの経路探索の重みに
+    # 使われるため、avacuation_engine.pyの避難歩行距離が常に0mになる
+    # (=計算が機能していないのと同じ)不具合につながっていた
+    # (ユーザーからの「歩行距離が0mで合格になっているのは計算されて
+    # いないのでは」との指摘で発覚)。ドアの代表点から部屋ポリゴンへの
+    # Hausdorff距離(点から見てポリゴン内で最も遠い点までの距離)に
+    # 置き換えたことを確認する。
+    test_db.insert_element(
+        "wall1", "Wall", "壁",
+        json.dumps({"archicad_details": {"begThickness": 0.2, "endThickness": 0.2}}),
+        json.dumps({"type": "line", "points": [[1000, 0], [1000, 2000]]}),
+    )
+    test_db.insert_element(
+        "door1", "Door", "ドア",
+        json.dumps({"archicad_details": {
+            "ownerElementType": "Wall",
+            "ownerElementId": {"guid": "wall1"},
+        }}),
+        json.dumps({"type": "point", "x": 1000, "y": 1000}),
+    )
+    test_db.insert_element(
+        "room1", "Room", "居室A",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [1000, 0], [1000, 2000], [0, 2000]]}),
+    )
+    test_db.insert_element(
+        "room2", "Room", "居室B",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[1000, 0], [2000, 0], [2000, 2000], [1000, 2000]]}),
+    )
+
+    relations = calculate_relations()
+
+    door_connects = {
+        (r["target_guid"] if r["source_guid"] == "door1" else r["source_guid"]): r["distance"]
+        for r in relations
+        if r["relation"] == "connects" and "door1" in (r["source_guid"], r["target_guid"])
+    }
+
+    # ドア(1000,1000)から各部屋ポリゴンの最遠頂点(角)までの距離。
+    assert door_connects["room1"] == pytest.approx(1414.213562373095)
+    assert door_connects["room2"] == pytest.approx(1414.213562373095)
 
 
 def _element(guid, element_type, properties, geometry):

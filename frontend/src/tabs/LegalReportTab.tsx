@@ -200,6 +200,16 @@ const ITEM_COLUMN_DEFS: ColDef<ItemRow>[] = [
     valueGetter: (params) => params.data?.target_name ?? params.data?.target_guid,
   },
   {
+    // (2026-08-14追加)ユーザーから「対象の階数も表示できるように」との
+    // 依頼を受けて追加。SpaceViewer3D.tsxの階数表示("{floorIndex}F")と
+    // 同じ表記(0始まりのfloorIndexをそのまま使う)に揃える。
+    field: "floor_index",
+    headerName: "階",
+    width: 80,
+    valueFormatter: (params) =>
+      params.value === null || params.value === undefined ? "-" : `${params.value}F`,
+  },
+  {
     field: "status",
     headerName: "判定",
     width: 140,
