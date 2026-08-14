@@ -307,4 +307,14 @@ async def run_legal_report() -> dict:
 
     _record_token_usage("legal_report", None, result.get("usage") or {})
 
-    return {"checks": result["checks"], "report": result["report"]}
+    # (2026-08-14追加)基準値(threshold)・参照値/途中結果(items[].evidence)・
+    # 判定(items[].status)を含む全内容をdatabase.db.legal_report_history
+    # へ保存する(履歴を積む、db.save_legal_report()のdocstring参照)。
+    # 以前はレスポンスとして返すだけでデータベースには一切残らなかった。
+    generated_at = db.save_legal_report(result["report"], result["checks"])
+
+    return {
+        "checks": result["checks"],
+        "report": result["report"],
+        "generated_at": generated_at,
+    }

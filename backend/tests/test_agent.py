@@ -387,6 +387,31 @@ def test_run_legal_report_records_token_usage(monkeypatch, sample_elements):
     assert jobs[0]["job_id"].startswith("legal_report_")
 
 
+def test_run_legal_report_persists_full_check_detail_to_db(monkeypatch, sample_elements):
+    # (2026-08-14追加)最終結果(レポート文)だけでなく、基準値(threshold)・
+    # 参照値/途中結果(items[].evidence)・判定(items[].status)を含む全内容が
+    # database.db.legal_report_historyへ保存されることを確認する。
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    _install_fake_report_model(monkeypatch, "レポート本文")
+
+    result = asyncio.run(agent_service.run_legal_report())
+
+    assert result["generated_at"]
+
+    entries = db_module.list_legal_report_history()
+    assert len(entries) == 1
+    assert entries[0]["generated_at"] == result["generated_at"]
+    assert entries[0]["report"] == "レポート本文"
+
+    saved = db_module.get_legal_report_history_entry(entries[0]["id"])
+    saved_checks = json.loads(saved["checks_json"])
+    saved_by_id = {check["rule_id"]: check for check in saved_checks}
+
+    door_check = saved_by_id["accessible_door_width"]
+    assert door_check["threshold"] == pytest.approx(0.8)
+    assert door_check["items"][0]["status"] == "unknown"
+
+
 def test_summarize_for_prompt_reports_missing_inputs_as_unjudged():
     checks = [
         {

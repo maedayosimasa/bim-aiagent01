@@ -56,6 +56,52 @@ def test_get_site_boundary_empty_when_not_found(sample_elements):
     assert get_site_boundary() == []
 
 
+def test_get_site_boundary_excludes_mesh_with_gaichi_layer_name(test_db):
+    # 実データで発覚した不具合: 地盤モデリング用のMeshのlayer_nameが
+    # 「敷地外_地盤」(=敷地の"外側"の地盤)という、"敷地"を含むが意味は
+    # 反転した複合語だったため、素朴な部分一致では誤って敷地境界線として
+    # 検出されてしまっていた。
+    test_db.insert_element(
+        "zone_site", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 8000], [0, 8000]]}),
+    )
+    test_db.insert_element(
+        "mesh_ground", "Mesh", "Mesh_12345678",
+        json.dumps({"archicad_id": "道路", "layer_name": "敷地外_地盤"}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[-30000, -30000], [-20000, -30000], [-20000, -20000], [-30000, -20000]],
+        }),
+    )
+
+    boundary = get_site_boundary()
+
+    assert [b["guid"] for b in boundary] == ["zone_site"]
+
+
+def test_get_site_boundary_excludes_mesh_with_shuhen_shikichi_id(test_db):
+    # 実データで発覚した不具合: 隣接・周辺の別敷地を示すMeshの
+    # archicad_id「周辺敷地」も"敷地"を含むが、当該敷地そのものではない。
+    test_db.insert_element(
+        "zone_site", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 8000], [0, 8000]]}),
+    )
+    test_db.insert_element(
+        "mesh_surrounding", "Mesh", "Mesh_abcdefgh",
+        json.dumps({"archicad_id": "周辺敷地"}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[-30000, -30000], [30000, -30000], [30000, 30000], [-30000, 30000]],
+        }),
+    )
+
+    boundary = get_site_boundary()
+
+    assert [b["guid"] for b in boundary] == ["zone_site"]
+
+
 def test_get_road_boundaries_estimates_width_and_centerline(test_db):
     # 幅6m x 長さ20mの帯状の道路Zone。
     test_db.insert_element(

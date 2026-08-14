@@ -53,7 +53,13 @@ def _zone_summary(element):
 
 
 def matches_zone_keyword(
-    element_type: str, name: str | None, archicad_id: str | None, layer_name: str | None, keyword: str
+    element_type: str,
+    name: str | None,
+    archicad_id: str | None,
+    layer_name: str | None,
+    keyword: str,
+    *,
+    exclude_keywords: tuple[str, ...] = (),
 ) -> bool:
     """Zone/Room/Meshがkeywordに一致するかを判定する(名前ベースの部分一致)。
 
@@ -62,21 +68,29 @@ def matches_zone_keyword(
     要素向け)の両方から呼べるよう、DB行の形に依存しない引数を取る。
     Zone/Roomはname、Meshはarchicad_id/layer_nameで照合する
     (モジュールdocstring参照)。
+
+    exclude_keywordsを指定した場合、keywordが一致したフィールドの値に
+    exclude_keywordsのいずれかが含まれていればその一致を無効にする
+    (例: keyword="敷地"に対しexclude_keywords=("敷地外",)を指定すると、
+    "敷地外_地盤"のような値は「敷地」を含むが実際には「敷地の外側」を
+    意味する語であるため除外できる)。
     """
-    if keyword in (name or ""):
+
+    def _matches(value):
+        if not value or keyword not in value:
+            return False
+        return not any(excl in value for excl in exclude_keywords)
+
+    if _matches(name):
         return True
 
     if element_type != "Mesh":
         return False
 
-    for value in (archicad_id, layer_name):
-        if value and keyword in value:
-            return True
-
-    return False
+    return _matches(archicad_id) or _matches(layer_name)
 
 
-def _matches_keyword(element, keyword):
+def _matches_keyword(element, keyword, exclude_keywords=()):
     try:
         properties = json.loads(element["properties"] or "{}")
     except (TypeError, json.JSONDecodeError):
@@ -85,24 +99,25 @@ def _matches_keyword(element, keyword):
     return matches_zone_keyword(
         element["type"], element["name"],
         properties.get("archicad_id"), properties.get("layer_name"),
-        keyword,
+        keyword, exclude_keywords=exclude_keywords,
     )
 
 
-def find_zones_by_name(keyword):
+def find_zones_by_name(keyword, exclude_keywords=()):
     """keywordに一致するZone(Room)/Meshを実データ(SQLiteキャッシュ)から検索する。
 
     Zone/Roomはelement["name"](Archicadの実名)で、Meshは
     properties.archicad_id(Archicad UIの「IDとカテゴリ」→「ID」欄)または
     properties.layer_nameで照合する(Meshに"name"が無いため)。
     複数件ヒットする場合(角地で道路が2本あるなど)も想定し、常にリストで返す。
+    exclude_keywordsはmatches_zone_keyword()参照。
     """
 
     zones = [e for e in get_elements() if e["type"] in ("Zone", "Room", "Mesh")]
 
     matches = []
     for zone in zones:
-        if not _matches_keyword(zone, keyword):
+        if not _matches_keyword(zone, keyword, exclude_keywords):
             continue
         summary = _zone_summary(zone)
         if summary is not None:
@@ -111,10 +126,50 @@ def find_zones_by_name(keyword):
     return matches
 
 
-def get_site_boundary():
-    """名前に"敷地"を含むZoneを敷地境界線として返す。"""
+# (2026-08-14追加)実データで、地盤モデリング用のMeshが"敷地"キーワードに
+# 誤って一致する2パターンを確認した: (1) layer_name「敷地外_地盤」の
+# "敷地外"(=敷地の外側)という否定的な複合語、(2) archicad_id「周辺敷地」の
+# "周辺敷地"(=隣接・周辺の別敷地であって当該敷地そのものではない)という
+# 修飾語。いずれも部分一致では検出できない「意味の反転・限定」のため、
+# 既知のパターンとして明示的に除外する。
+_SITE_KEYWORD_EXCLUSIONS = ("敷地外", "周辺敷地")
 
-    return find_zones_by_name("敷地")
+
+def get_site_boundary():
+    """名前に"敷地"を含むZone/Meshを敷地境界線として返す。
+
+    "敷地外"・"周辺敷地"を含む場合は除外する(_SITE_KEYWORD_EXCLUSIONS参照)。
+    """
+
+    return find_zones_by_name("敷地", exclude_keywords=_SITE_KEYWORD_EXCLUSIONS)
+
+
+def is_site_marker_element(
+    element_type: str, name: str | None, archicad_id: str | None, layer_name: str | None
+) -> bool:
+    """要素が「敷地の目印」(敷地境界線Zone、または敷地であることを示す
+    識別子を持つ任意の型の要素)かどうかを判定する。
+
+    get_site_boundary()/find_zones_by_name()(敷地境界線の**幾何取得**用、
+    archicad_id/layer_nameの照合をMesh限定にしている)とは異なり、型を
+    問わずname/archicad_id/layer_nameのいずれかで判定する
+    (archicad_mcp/server.pyのsync_from_archicad()が、法条件カスタム
+    プロパティを取得すべき対象を決める用途で使う。実データでObject型
+    要素にも敷地の目印(archicad_id="敷地")が付けられているケースを
+    確認済みで、この用途では幾何形状の信頼性を問わないため型を問わず
+    広く拾う)。"敷地外"・"周辺敷地"を含む場合はget_site_boundary()と
+    同様に除外する(_SITE_KEYWORD_EXCLUSIONS参照。2026-08-14修正、
+    以前はこの除外が無く、地盤モデリング用のMesh(archicad_id="周辺敷地"
+    等)が敷地の目印と誤認識され、法条件プロパティ(建蔽率等)がその
+    Meshに対して取得・保存されてしまっていた)。
+    """
+
+    def _matches(value):
+        if not value or "敷地" not in value:
+            return False
+        return not any(excl in value for excl in _SITE_KEYWORD_EXCLUSIONS)
+
+    return _matches(name) or _matches(archicad_id) or _matches(layer_name)
 
 
 def _estimate_width_and_centerline(points):

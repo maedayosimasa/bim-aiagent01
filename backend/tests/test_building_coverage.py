@@ -126,3 +126,74 @@ def test_calculate_building_coverage_ratio_computes_ratio(test_db):
     # 敷地 = 14m x 14m = 196m^2
     assert entry["evidence"]["site_area_m2"] == pytest.approx(196.0)
     assert entry["measured_value"] == pytest.approx(100.0 / 196.0)
+
+
+def test_calculate_building_coverage_ratio_excludes_slab_from_unrelated_distant_building(test_db):
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[-2000, -2000], [12000, -2000], [12000, 12000], [-2000, 12000]]}),
+    )
+    test_db.insert_element(
+        "room1", "Room", "居室",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    # site1から100m以上離れた別棟のSlab(実データで確認された、周辺敷地に
+    # モデル化された別棟の床スラブに相当)。
+    test_db.insert_element(
+        "slab_distant", "Slab", "別棟スラブ",
+        json.dumps({}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[100000, 100000], [130000, 100000], [130000, 130000], [100000, 130000]],
+            "z_min": 0, "z_max": 3000,
+        }),
+    )
+
+    result = calculate_building_coverage_ratio()
+
+    assert len(result) == 1
+    entry = result[0]
+    # 別棟スラブ(900m^2)が混入していれば大きく100m^2を超える。
+    assert entry["evidence"]["building_area_m2"] == pytest.approx(100.0)
+    assert entry["measured_value"] == pytest.approx(100.0 / 196.0)
+
+
+def test_calculate_building_coverage_ratio_scopes_building_area_per_site(test_db):
+    # 2つの離れた敷地Zoneがそれぞれ独立した建物を持つ場合、各敷地の
+    # 建蔽率はその敷地内の建物面積のみで計算されるべきで、もう一方の
+    # 敷地の建物面積が混入してはいけない(2026-08-14修正前は、両方の敷地
+    # に対して全モデル合算の同一building_area_m2が使われていた)。
+    test_db.insert_element(
+        "site1", "Zone", "敷地1",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[-2000, -2000], [12000, -2000], [12000, 12000], [-2000, 12000]]}),
+    )
+    test_db.insert_element(
+        "room1", "Room", "居室1",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+    test_db.insert_element(
+        "site2", "Zone", "敷地2",
+        json.dumps({}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[98000, -2000], [112000, -2000], [112000, 12000], [98000, 12000]],
+        }),
+    )
+    test_db.insert_element(
+        "room2", "Room", "居室2",
+        json.dumps({}),
+        json.dumps({
+            "type": "polygon",
+            "points": [[100000, 0], [105000, 0], [105000, 5000], [100000, 5000]],
+        }),
+    )
+
+    result = calculate_building_coverage_ratio()
+    by_guid = {r["target_guid"]: r for r in result}
+
+    assert by_guid["site1"]["evidence"]["building_area_m2"] == pytest.approx(100.0)
+    assert by_guid["site2"]["evidence"]["building_area_m2"] == pytest.approx(25.0)

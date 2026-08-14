@@ -24,10 +24,27 @@
      張り出しは建築面積に算入しない(施行令2条1項2号の緩和規定)。実装は
      「外郭を1mバッファした領域」をSlab/Roofのunionから差し引いた残り
      (1mを超えて突き出た部分のみ)を1.に加算する。
+
+(2026-08-14修正)`calculate_building_area_m2()`はsite_polygonを受け取り、
+Room/Zone・Wall・Slab/Roofそれぞれの代表点(重心)が敷地境界線ポリゴン内
+(`_SITE_TOLERANCE_MM`の許容誤差付き、`engine/site_frontage.py`等と同じ
+考え方)にあるものだけを対象にするようにした。`calculate_building_coverage_ratio()`
+は敷地ごとにこの絞り込みを行った上で建築面積を計算する(以前は敷地に
+関係なく全モデルの要素を対象にしていた)。**実データで、モデル内に別棟の
+Slab(このMCPプロジェクトが日影検討等のため周辺敷地・別棟も含めてモデル化
+していたと見られる、実際の建物から10m〜30m以上離れた位置のSlab)が
+site_polygonによる絞り込み無しに建築面積へ丸ごと加算され、339m²の敷地に
+対し建築面積1022.8m²(建蔽率301%)という明らかに不合理な結果になる不具合が
+発覚した。** 原因は`_overhang_polygons()`が対象敷地を問わずモデル内の
+全Slab/Roofを収集し、`exemption_zone`(当該敷地の外郭を1mバッファした
+領域)の外側にあるものは(1m未満の張り出しとしてではなく)全面積を無条件で
+加算していたこと。site_polygonでの絞り込みにより、そもそも当該敷地と
+無関係な要素は候補にすら入らなくなる。
 """
 
 import json
 
+from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 from ..database.db import get_elements
@@ -50,14 +67,21 @@ _EAVES_EXEMPTION_MM = 1_000
 # (Slab/Roofは実データでポリゴン形状+高さ範囲を取得できることを確認済み)。
 _OVERHANG_ELEMENT_TYPES = ("Slab", "Roof")
 
+# site_polygonによる絞り込み時の許容誤差。敷地境界線ちょうどに乗る外壁の
+# 中心線等をわずかな数値誤差で取りこぼさないための遊び
+# (site_frontage.py・adjacent_boundary_slant_envelope.pyの300mm許容誤差と
+# 同じ考え方)。
+_SITE_TOLERANCE_MM = 300
+
 BUILDING_COVERAGE_RATIO_DISCLAIMER = (
     "参考値です。建築面積はBIMモデル上のRoom/Zone面積・壁芯+半厚み・"
     "Slab/Roofのオーバーハング(水平距離1m未満の張り出しは施行令2条1項2号"
     "により不算入)から幾何的に近似した値であり、実際の測量値・確認申請上の"
     "建築面積とは一致しない場合があります。外壁/内壁の区別が無いため全Wall"
-    "を対象にしており、独立した塀等が誤って含まれる可能性があります。複数棟"
-    "の敷地では全棟合計になります(棟ごとの分離は未実装)。角地・防火地域"
-    "等の建蔽率緩和規定は未実装です。法的な適合を保証するものではありません。"
+    "を対象にしており、独立した塀等が誤って含まれる可能性があります。同一"
+    "敷地内に複数棟がある場合は全棟合計になります(棟ごとの分離は未実装)。"
+    "角地・防火地域等の建蔽率緩和規定は未実装です。法的な適合を保証するもの"
+    "ではありません。"
 )
 
 
@@ -101,10 +125,22 @@ def _overhang_polygons(elements):
     return polygons
 
 
-def calculate_building_area_m2() -> float | None:
-    """建物全体(全floorIndex合算)の建築面積(m2)を返す。
+def _filter_by_site(polygons, site_region):
+    if site_region is None:
+        return polygons
+    return [p for p in polygons if site_region.contains(p.centroid)]
 
-    Room/Zone・Wallが1件も無い場合はNone(算出不能)を返す。
+
+def calculate_building_area_m2(site_polygon: Polygon | None = None) -> float | None:
+    """建築面積(m2)を返す。
+
+    site_polygonを指定した場合、代表点(重心)がその敷地境界線ポリゴン内
+    (`_SITE_TOLERANCE_MM`の許容誤差付き)にあるRoom/Zone・Wall・Slab/Roof
+    のみを対象にする(モデル内の別棟・周辺敷地の要素を含めないため、
+    モジュールdocstring参照)。省略時(None)はモデル内の全要素を対象にする
+    (後方互換)。
+
+    対象範囲にRoom/Zone・Wallが1件も無い場合はNone(算出不能)を返す。
     """
     rebuild_connections()
 
@@ -124,6 +160,12 @@ def calculate_building_area_m2() -> float | None:
             room_polygons.append(polygon)
 
     wall_polygons = _wall_footprint_polygons(elements)
+    overhang_polygons = _overhang_polygons(elements)
+
+    site_region = site_polygon.buffer(_SITE_TOLERANCE_MM) if site_polygon is not None else None
+    room_polygons = _filter_by_site(room_polygons, site_region)
+    wall_polygons = _filter_by_site(wall_polygons, site_region)
+    overhang_polygons = _filter_by_site(overhang_polygons, site_region)
 
     base_parts = room_polygons + wall_polygons
     if not base_parts:
@@ -133,7 +175,6 @@ def calculate_building_area_m2() -> float | None:
     if base_envelope.is_empty:
         return None
 
-    overhang_polygons = _overhang_polygons(elements)
     counted_overhang_area_mm2 = 0.0
 
     if overhang_polygons:
@@ -149,13 +190,19 @@ def calculate_building_area_m2() -> float | None:
 def calculate_building_coverage_ratio() -> list[dict]:
     """敷地(敷地境界線Zone)ごとに、建築面積/敷地面積の比率を返す。
 
-    敷地境界線Zoneが見つからない場合は空リストを返す(判定不能)。
+    建築面積は敷地ごとにsite_polygonで絞り込んで計算する(2026-08-14修正、
+    以前は全敷地で同じ全モデル合算の建築面積を共有しており、複数の敷地
+    Zone/Meshが検出された場合に無関係な敷地に対しても他の敷地の建築面積が
+    そのまま使われていた)。敷地境界線Zoneが見つからない場合は空リストを
+    返す(判定不能)。
     """
-    building_area_m2 = calculate_building_area_m2()
     site_zones = get_site_boundary()
 
-    return [
-        {
+    results = []
+    for site in site_zones:
+        site_polygon = Polygon(site["points"])
+        building_area_m2 = calculate_building_area_m2(site_polygon)
+        results.append({
             "target_guid": site["guid"],
             "target_name": site["name"],
             "measured_value": (
@@ -167,6 +214,5 @@ def calculate_building_coverage_ratio() -> list[dict]:
                 "building_area_m2": building_area_m2,
                 "site_area_m2": site["area_m2"],
             },
-        }
-        for site in site_zones
-    ]
+        })
+    return results

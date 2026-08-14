@@ -5,7 +5,7 @@ from mcp.server.mcpserver import MCPServer
 from ..database import db
 from ..engine.legal_inputs import ARCHICAD_LEGAL_PROPERTY_KEYWORDS
 from ..engine.relation_builder import rebuild_connections
-from ..engine.site import matches_zone_keyword
+from ..engine.site import is_site_marker_element
 from ..engine.spatial import analyze_space
 from ..engine.vector_store import search_elements
 from ..graph.geometry import geometry_from_json
@@ -254,12 +254,12 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         # 制約)だが、実データでは"Object"型要素にもarchicad_id="敷地"が
         # 付けられているケースを確認した。法条件プロパティの取得は幾何を
         # 使わないため型を問わず広く拾う(見逃しよりも過検出を許容する)。
-        is_site_marker = (
-            matches_zone_keyword(element_type, name, archicad_id, layer_name, "敷地")
-            or (archicad_id and "敷地" in archicad_id)
-            or (layer_name and "敷地" in layer_name)
-        )
-        if is_site_marker:
+        # (2026-08-14同日追加修正)ただし型を問わない分、"敷地外_地盤"
+        # (layer_name)・"周辺敷地"(archicad_id)のような地盤モデリング用
+        # Meshまで誤って拾ってしまう不具合が実データで発覚したため、
+        # is_site_marker_element()で"敷地外"・"周辺敷地"を除外する
+        # (engine/site.pyのget_site_boundary()と同じ除外パターン)。
+        if is_site_marker_element(element_type, name, archicad_id, layer_name):
             site_guids.append(guid)
 
     legal_conditions_synced = await _sync_legal_condition_properties(site_guids)

@@ -436,6 +436,71 @@ def test_sync_from_archicad_tool_detects_site_marker_on_object_type(test_db, mon
     assert payload["legal_conditions_synced"] == {"obj-guid": {"建蔽率": "60"}}
 
 
+def test_sync_from_archicad_tool_excludes_surrounding_site_mesh_from_legal_conditions(
+    test_db, monkeypatch
+):
+    # (2026-08-14実データで発覚・修正)地盤モデリング用のMesh
+    # (archicad_id="周辺敷地"、layer_name="敷地外_地盤")が、型を問わない
+    # archicad_id/layer_name照合(is_site_marker_element導入前の旧実装)に
+    # よって誤って敷地の目印と判定され、GetPropertyValuesOfElementsで
+    # (実際には未設定の)法条件プロパティを取得・保存してしまっていた。
+    # この誤った値が本来の敷地Zoneより先にresolve_legal_input()にヒットし、
+    # 建蔽率が0%として解決される不具合につながった。"周辺敷地"を含む要素は
+    # 法条件の同期対象からも除外されるべき(GetPropertyValuesOfElements
+    # 自体が呼ばれないため、legal_conditions_syncedは空になる)。
+    from mcp.server.mcpserver import MCPServer
+
+    fake_server = MCPServer(name="fake-tapir-surrounding-site-mesh")
+
+    @fake_server.tool(name="GetAllElements")
+    def get_all_elements(input) -> dict:
+        return {"elements": [{"elementId": {"guid": "mesh-guid"}}]}
+
+    @fake_server.tool(name="GetDetailsOfElements")
+    def get_details_of_elements(input) -> dict:
+        return {
+            "detailsOfElements": [
+                {
+                    "type": "Mesh",
+                    "id": "周辺敷地",
+                    "floorIndex": 0,
+                    "layerIndex": 0,
+                    "details": {"polygonCoordinates": [
+                        {"x": 0, "y": 0, "z": 0}, {"x": 1, "y": 0, "z": 0},
+                        {"x": 1, "y": 1, "z": 0}, {"x": 0, "y": 1, "z": 0},
+                    ]},
+                },
+            ]
+        }
+
+    @fake_server.tool(name="Get3DBoundingBoxes")
+    def get_bounding_boxes(input) -> dict:
+        return {"boundingBoxes3D": [{"boundingBox3D": {
+            "xMin": 0, "yMin": 0, "zMin": 0, "xMax": 1, "yMax": 1, "zMax": 1,
+        }}]}
+
+    @fake_server.tool(name="GetAttributesByType")
+    def get_attributes_by_type(input) -> dict:
+        return {"attributes": []}
+
+    @fake_server.tool(name="GetAllProperties")
+    def get_all_properties(input) -> dict:
+        raise AssertionError("周辺敷地Meshに対してGetAllPropertiesが呼ばれてはいけない")
+
+    monkeypatch.setattr(
+        archicad_client, "_default_transport", lambda: InMemoryTransport(fake_server)
+    )
+
+    result = call_mcp_tool("sync_from_archicad", {"limit": 10})
+    payload = _payload(result)
+
+    assert payload["legal_conditions_synced"] == {}
+
+    mesh = db.get_element("mesh-guid")
+    properties = json.loads(mesh["properties"])
+    assert "legal_conditions" not in properties
+
+
 def test_update_element_geometry_tool_missing_guid_is_error(test_db):
     result = call_mcp_tool(
         "update_element_geometry",

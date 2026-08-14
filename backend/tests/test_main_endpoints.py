@@ -477,3 +477,50 @@ def test_agent_usage_jobs_endpoint(api_client, test_db):
     chat_job = next(j for j in jobs_data if j["kind"] == "chat")
     assert chat_job["job_id"] == "session-1"
     assert chat_job["input_tokens"] == 100
+
+
+def test_agent_legal_report_history_endpoint(api_client, test_db):
+    from backend.database import db as db_module
+
+    checks = [
+        {
+            "rule_id": "building_coverage_ratio",
+            "title": "建蔽率(参考値、建築基準法53条)",
+            "threshold": 0.9,
+            "threshold_unit": "ratio",
+            "comparator": "lte",
+            "disclaimer": "参考値です。",
+            "legal_sources": [],
+            "items": [{
+                "target_guid": "site1", "target_name": "敷地", "status": "pass",
+                "measured_value": 0.761, "unit": "ratio",
+                "evidence": {"building_area_m2": 258.3, "site_area_m2": 339.5},
+            }],
+            "missing_inputs": [],
+        }
+    ]
+    db_module.save_legal_report("レポート本文", checks)
+
+    history = api_client.get("/agent/legal_report/history")
+    assert history.status_code == 200
+    reports = history.json()["reports"]
+    assert len(reports) == 1
+    assert reports[0]["report"] == "レポート本文"
+    assert "checks_json" not in reports[0]  # 一覧は概要のみ
+
+    entry_id = reports[0]["id"]
+    detail = api_client.get(f"/agent/legal_report/history/{entry_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["report"] == "レポート本文"
+    # 基準値(threshold)・参照値/途中結果(evidence)・判定(status)が
+    # 詳細取得では復元されることを確認する。
+    item = body["checks"][0]["items"][0]
+    assert body["checks"][0]["threshold"] == 0.9
+    assert item["status"] == "pass"
+    assert item["evidence"] == {"building_area_m2": 258.3, "site_area_m2": 339.5}
+
+
+def test_agent_legal_report_history_entry_not_found(api_client, test_db):
+    response = api_client.get("/agent/legal_report/history/99999")
+    assert response.status_code == 404

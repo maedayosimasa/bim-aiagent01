@@ -152,3 +152,75 @@ def test_list_audit_log_returns_newest_first(test_db):
     entries = db.list_audit_log()
 
     assert [e["id"] for e in entries] == [second_id, first_id]
+
+
+def _sample_legal_report_checks():
+    # building_coverage_ratioを模した、threshold(基準値)・evidence(参照値・
+    # 途中結果)・status(判定)を全て含むcheck。
+    return [
+        {
+            "rule_id": "building_coverage_ratio",
+            "title": "建蔽率(参考値、建築基準法53条)",
+            "concept_id": "building_coverage_ratio",
+            "threshold": 0.9,
+            "threshold_unit": "ratio",
+            "comparator": "lte",
+            "disclaimer": "参考値です。",
+            "legal_sources": [],
+            "items": [
+                {
+                    "target_guid": "site1",
+                    "target_name": "敷地",
+                    "status": "pass",
+                    "measured_value": 0.761,
+                    "unit": "ratio",
+                    "evidence": {"building_area_m2": 258.3, "site_area_m2": 339.5},
+                }
+            ],
+            "missing_inputs": [],
+        }
+    ]
+
+
+def test_save_legal_report_persists_full_check_detail(test_db):
+    checks = _sample_legal_report_checks()
+
+    generated_at = db.save_legal_report("レポート本文", checks)
+
+    entry = db.get_legal_report_history_entry(1)
+    assert entry["generated_at"] == generated_at
+    assert entry["report"] == "レポート本文"
+
+    saved_checks = json.loads(entry["checks_json"])
+    assert saved_checks == checks
+    # 基準値(threshold)・参照値/途中結果(evidence)・判定(status)が
+    # 最終結果(measured_value)だけでなく全て保存されていることを確認する。
+    item = saved_checks[0]["items"][0]
+    assert saved_checks[0]["threshold"] == 0.9
+    assert item["status"] == "pass"
+    assert item["evidence"] == {"building_area_m2": 258.3, "site_area_m2": 339.5}
+
+
+def test_get_legal_report_history_entry_missing_returns_none(test_db):
+    assert db.get_legal_report_history_entry(99999) is None
+
+
+def test_list_legal_report_history_returns_newest_first_without_checks_json(test_db):
+    checks = _sample_legal_report_checks()
+    db.save_legal_report("1件目", checks)
+    db.save_legal_report("2件目", checks)
+
+    entries = db.list_legal_report_history()
+
+    assert [e["report"] for e in entries] == ["2件目", "1件目"]
+    assert set(entries[0].keys()) == {"id", "generated_at", "report"}
+
+
+def test_list_legal_report_history_respects_limit(test_db):
+    checks = _sample_legal_report_checks()
+    for i in range(3):
+        db.save_legal_report(f"{i}件目", checks)
+
+    entries = db.list_legal_report_history(limit=2)
+
+    assert len(entries) == 2

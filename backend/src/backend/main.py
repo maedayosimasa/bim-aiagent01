@@ -1010,3 +1010,29 @@ async def agent_legal_report():
         raise HTTPException(status_code=413, detail=str(exc))
     except anthropic.APIError as exc:
         raise HTTPException(status_code=502, detail=f"Claude APIの呼び出しに失敗しました: {exc}")
+
+
+@app.get("/agent/legal_report/history")
+def agent_legal_report_history(limit: int = 20):
+    # (2026-08-14追加)過去に生成した法規レポートの一覧(概要のみ、
+    # database.db.legal_report_history)。基準値・参照値・判定を含む全内容は
+    # /agent/legal_report/history/{entry_id}で個別に取得する。
+    rows = db_module.list_legal_report_history(limit)
+    return {"reports": [dict(row) for row in rows]}
+
+
+@app.get("/agent/legal_report/history/{entry_id}")
+def agent_legal_report_history_entry(entry_id: int):
+    # 過去に生成した法規レポート1件の全内容(threshold/comparator/
+    # disclaimer/items[].evidence/items[].status/legal_sources/
+    # missing_inputsを含む、生成当時のchecksをそのまま)を返す。
+    row = db_module.get_legal_report_history_entry(entry_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"レポート履歴が見つかりません: {entry_id}")
+
+    return {
+        "id": row["id"],
+        "generated_at": row["generated_at"],
+        "report": row["report"],
+        "checks": json.loads(row["checks_json"]),
+    }

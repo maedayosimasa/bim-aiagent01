@@ -44,6 +44,7 @@ import os
 from dataclasses import dataclass
 
 from ..database.db import get_elements
+from .site import is_site_marker_element
 
 
 @dataclass(frozen=True)
@@ -349,6 +350,18 @@ def _resolve_from_site_properties(key: str) -> str | None:
     archicad()が敷地と判定した要素にしか設定されないため、ここで改めて
     型を絞り込む意味は無い(絞り込み自体が見逃しの原因だった)——全要素の
     legal_conditionsをそのまま確認する。
+
+    (2026-08-14同日追加修正)ただしこの「型を問わず全要素を見る」設計は、
+    要素自体が本当に敷地の目印かどうかを一切確認していなかったため、
+    実データで地盤モデリング用のMesh(archicad_id="周辺敷地"、法条件は
+    全て未設定で"0.000"のプレースホルダー値)がsync_from_archicad()側の
+    旧バグ(is_site_marker_elementの除外パターン導入前)で誤ってlegal_
+    conditionsを持ってしまっていたケースが見つかった——get_elements()の
+    先頭寄りにこのMeshがあったため、本来の敷地Zone(建蔽率90%)より先に
+    ヒットし、建蔽率が0%として解決されてしまっていた。要素自体が
+    is_site_marker_element()(敷地外・周辺敷地を除外)を満たすことを
+    再度確認するようにした(sync済みキャッシュに残る汚染データへの
+    読み取り時の防御。ARCHICAD_MCP_URL未設定でも再同期無しに直る)。
     """
     keywords = ARCHICAD_LEGAL_PROPERTY_KEYWORDS.get(key)
     if not keywords:
@@ -358,6 +371,11 @@ def _resolve_from_site_properties(key: str) -> str | None:
         try:
             properties = json.loads(element["properties"] or "{}")
         except (TypeError, json.JSONDecodeError):
+            continue
+        if not is_site_marker_element(
+            element["type"], element["name"],
+            properties.get("archicad_id"), properties.get("layer_name"),
+        ):
             continue
         legal_conditions = properties.get("legal_conditions") or {}
         for property_name, value in legal_conditions.items():

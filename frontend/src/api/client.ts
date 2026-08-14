@@ -580,10 +580,31 @@ export type LegalReportCheck = {
 export type LegalReportResponse = {
   checks: LegalReportCheck[];
   report: string;
+  // (2026-08-14追加)このレポートがdatabase.db.legal_report_historyへ
+  // 保存された際のタイムスタンプ(基準値・参照値・判定を含む全内容が
+  // 保存されるようになった、agent/service.py参照)。
+  generated_at: string;
 };
 
+// (2026-08-14発見・同日修正)/agent/legal_reportがAGENT_TIMEOUT_MS(3分)で
+// タイムアウトし「バックエンドが再起動中でないか確認してください」という
+// エラーが出る不具合をユーザーから報告された。backendを直接計測したところ、
+// 実際には失敗しておらず約178秒(3分弱)で正常に完了していた——法規レポートは
+// 登録済み全ルール(12件)をそれぞれBIMデータから再計算した上でLLM(Claude)を
+// 呼び、agent/report_graph.pyのverify_reportが件数・条文引用の不一致を検出
+// すると最大1回追加でレポートを再生成する(=Claude呼び出しが最大2回連続する)
+// ため、他のAPI呼び出しより本質的に時間がかかる。チャット(/agent/chat)向けの
+// 3分タイムアウトを共用していたため、ぎりぎり間に合わないケースが発生していた。
+// 法規レポート専用に長めのタイムアウトを設定する(ハング検知という目的自体は
+// AGENT_TIMEOUT_MSと同じだが、この処理の実測時間に合わせて余裕を持たせる)。
+const LEGAL_REPORT_TIMEOUT_MS = 480_000;
+
 export function generateLegalReport() {
-  return post<LegalReportResponse>("/agent/legal_report", undefined, AGENT_TIMEOUT_MS);
+  return post<LegalReportResponse>(
+    "/agent/legal_report",
+    undefined,
+    LEGAL_REPORT_TIMEOUT_MS
+  );
 }
 
 // AIエージェント(Claude API)のトークン使用量。agent/service.pyがrun_chat

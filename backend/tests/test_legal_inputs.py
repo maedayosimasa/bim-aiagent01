@@ -154,3 +154,25 @@ def test_resolve_legal_input_skips_placeholder_and_finds_next_match(test_db):
     )
 
     assert legal_inputs.resolve_legal_input("land_use_category") == "第一種住居地域"
+
+
+def test_resolve_legal_input_ignores_legal_conditions_on_non_site_marker_element(test_db):
+    # 実データで発覚した不具合の再現: 地盤モデリング用のMesh
+    # (archicad_id="周辺敷地")が、sync_from_archicad()側の旧バグにより
+    # legal_conditions(建蔽率等はすべて未設定・"0.000"のプレースホルダー)
+    # を持ってしまっていた。このMeshがget_elements()で本来の敷地Zoneより
+    # 先に返ると、"0.000"が誤って採用されてしまう(建蔽率90%の敷地なのに
+    # 0%が閾値として使われ、必ずFAILになる不具合につながった)。
+    # is_site_marker_element()による絞り込みでこのMeshは除外され、本来の
+    # 敷地Zoneの値が採用されるべき。
+    test_db.insert_element(
+        "mesh_surrounding", "Mesh", "Mesh_00000001",
+        json.dumps({
+            "archicad_id": "周辺敷地",
+            "legal_conditions": {"建蔽率": "0.000"},
+        }),
+        json.dumps({"type": "polygon", "points": [[-30000, -30000], [30000, -30000], [30000, 30000], [-30000, 30000]]}),
+    )
+    _insert_site_with_legal_conditions(test_db, {"建蔽率": "90.000"})
+
+    assert legal_inputs.resolve_legal_input("kenpei_ritsu") == "90.000"
