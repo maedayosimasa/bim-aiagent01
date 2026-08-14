@@ -1,9 +1,8 @@
 from ..graph.relation import calculate_relations
 
 from ..database.db import (
-    clear_connections,
-    insert_connections_bulk,
     get_elements,
+    replace_all_connections,
     save_graph_relation_results,
 )
 
@@ -12,11 +11,18 @@ def rebuild_connections():
 
     print("=== Rebuilding Connections ===")
 
-    clear_connections()
-
+    # (2026-08-14追加、トランザクション化)以前はclear_connections()
+    # (1コミット)の直後にcalculate_relations()を計算し、insert_
+    # connections_bulk()(別の1コミット)で書き込んでいたため、計算中は
+    # connectionsテーブルが空のまま放置されていた(多くのengine計算が
+    # グラフ構築のたびにconnectionsを読むため、その間に読まれると
+    # 「関係が一切無い」という誤った結果になりうる)。計算を先に済ませて
+    # から、削除+書き込みをreplace_all_connections()で1トランザクション
+    # として実行することで、この空白期間自体を無くす
+    # (database.db.replace_all_connections()のdocstring参照)。
     relations = calculate_relations()
 
-    insert_connections_bulk(relations)
+    replace_all_connections(relations)
 
     print(
         f"{len(relations)} connections created."

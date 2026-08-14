@@ -1,8 +1,107 @@
 import json
+import sqlite3
 
 import pytest
 
 from backend.database import db
+
+
+def test_transaction_commits_on_success(test_db):
+    # (2026-08-14追加)transaction()コンテキストマネージャがブロック正常
+    # 終了時に自動でコミットすることを確認する。
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO elements (guid, type, name, properties, geometry) VALUES (?, ?, ?, ?, ?)",
+            ("temp1", "Wall", "一時", "{}", "{}"),
+        )
+
+    assert {e["guid"] for e in db.get_elements()} == {"temp1"}
+
+
+def test_transaction_rolls_back_on_exception(test_db):
+    # ブロック内で例外が発生した場合は自動でロールバックし、コミットされない
+    # ことを確認する(database.db.transaction()のdocstring参照——以前は
+    # 各DB関数が例外時にcommit()もrollback()も呼ばずに関数を抜けており、
+    # 接続リークやコミットされない変更が宙に浮く不具合があった)。
+    with pytest.raises(ValueError):
+        with db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO elements (guid, type, name, properties, geometry) VALUES (?, ?, ?, ?, ?)",
+                ("temp1", "Wall", "一時", "{}", "{}"),
+            )
+            raise ValueError("boom")
+
+    assert db.get_elements() == []
+
+
+def test_replace_all_elements_replaces_existing_data(test_db):
+    test_db.insert_element(
+        "old1", "Wall", "旧壁",
+        json.dumps({}), json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+    )
+
+    db.replace_all_elements([("new1", "Wall", "新壁", "{}", "{}")])
+
+    assert {e["guid"] for e in db.get_elements()} == {"new1"}
+
+
+def test_replace_all_elements_with_empty_list_clears_table(test_db):
+    test_db.insert_element(
+        "old1", "Wall", "旧壁",
+        json.dumps({}), json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+    )
+
+    db.replace_all_elements([])
+
+    assert db.get_elements() == []
+
+
+def test_replace_all_elements_rolls_back_on_failure(test_db):
+    # (2026-08-14追加、差分検知に基づく同期のトランザクション化の回帰
+    # テスト)以前はsync_from_archicad()がclear_elements()の後、要素ごとに
+    # insert_element()を個別コミットしており、同期処理が要素の途中で
+    # クラッシュすると「全要素削除済み・新データは一部のみ」という
+    # 既存データより悪い中途半端な状態のままDBが残ってしまっていた。
+    # guidが重複する要素リスト(UNIQUE制約違反でexecutemany()の途中で
+    # 失敗する)を渡し、失敗時に削除前のデータがそのまま残っている
+    # (ロールバックされている)ことを確認する。
+    test_db.insert_element(
+        "existing1", "Wall", "既存壁",
+        json.dumps({}), json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+    )
+
+    duplicate_elements = [
+        ("new1", "Wall", "新壁1", "{}", "{}"),
+        ("new1", "Wall", "新壁1(重複)", "{}", "{}"),
+    ]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        db.replace_all_elements(duplicate_elements)
+
+    assert {e["guid"] for e in db.get_elements()} == {"existing1"}
+
+
+def test_replace_all_connections_replaces_existing_data(test_db):
+    db.insert_connections_bulk(
+        [{"source_guid": "a", "target_guid": "b", "relation": "adjacent", "distance": 0}]
+    )
+
+    db.replace_all_connections(
+        [{"source_guid": "c", "target_guid": "d", "relation": "connects", "distance": 5}]
+    )
+
+    rows = db.get_connections()
+    assert [(r["source_guid"], r["target_guid"]) for r in rows] == [("c", "d")]
+
+
+def test_replace_all_connections_with_empty_list_clears_table(test_db):
+    db.insert_connections_bulk(
+        [{"source_guid": "a", "target_guid": "b", "relation": "adjacent", "distance": 0}]
+    )
+
+    db.replace_all_connections([])
+
+    assert db.get_connections() == []
 
 
 def test_get_element_returns_row(sample_elements):

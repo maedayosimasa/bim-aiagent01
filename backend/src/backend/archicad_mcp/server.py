@@ -207,10 +207,14 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     ギャップ)。ユーザーから「BIMから取り込んだデータに変更があれば、差分を
     確認し、計算や表示をそれぞれのデータベースで確実に更新するように」との
     依頼を受け、以下を同期処理自体に統合した:
-      1. `db.clear_elements()`で消える前の既存要素(guid→type/name/
-         properties/geometry)を退避し、今回同期する内容と突き合わせて
+      1. 既存要素(guid→type/name/properties/geometry)を`db.replace_all_
+         elements()`で置き換える前に退避し、今回同期する内容と突き合わせて
          追加(added)・変更(changed)・削除(removed)・不変(unchanged)を
-         判定する。
+         判定する(全要素の削除+書き込みは`db.replace_all_elements()`が
+         1トランザクションとして実行する——同期処理が要素の途中で
+         中断すると、以前は全要素削除済み・新データは一部のみという
+         中途半端な状態がDBに残ってしまう不具合があったため、2026-08-14に
+         `database.db.transaction()`を導入して解消した)。
       2. 追加・変更・削除が1件でもあれば`rebuild_connections()`
          (`connections`/`graph_relation_results`の再計算、実測0.2秒程度と
          軽量なため差分の大小に関わらず常にフル再計算する)を実行する。
@@ -261,8 +265,9 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     }
     layer_name_by_index = {layer["index"]: layer["name"] for layer in layers}
 
-    # (2026-08-14追加)clear_elements()で消える前に、差分判定用に既存の
-    # 内容(guid→type/name/properties/geometryの4つ組)を退避しておく。
+    # (2026-08-14追加)replace_all_elements()で置き換えられる前に、
+    # 差分判定用に既存の内容(guid→type/name/properties/geometryの
+    # 4つ組)を退避しておく。
     previous_elements = {
         element["guid"]: (
             element["type"], element["name"], element["properties"], element["geometry"]
@@ -270,13 +275,20 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         for element in db.get_elements()
     }
 
-    db.clear_elements()
-
     synced = 0
     site_guids = []
     new_guids: set[str] = set()
     added_guids: list[str] = []
     changed_guids: list[str] = []
+    # (2026-08-14追加、トランザクション化)以前はここでdb.clear_elements()
+    # (1コミット)を呼んだ上で、下のループ内でdb.insert_element()を要素
+    # ごとに個別コミットしていた。同期処理が要素の途中でクラッシュすると、
+    # 全要素削除済み・新データは一部のみという中途半端な状態がそのまま
+    # DBに残ってしまう不具合があった(database.db.transaction()参照)。
+    # 要素はここでは書き込まず、まとめてpending_elementsへ蓄積し、
+    # ループの後にdb.replace_all_elements()で削除+書き込みを1つの
+    # トランザクションとして実行する。
+    pending_elements: list[tuple[str, str, str, str, str]] = []
 
     for guid, details_item, bbox_item in zip(guids, details_list, bounding_boxes):
         element_type = details_item.get("type", "Unknown")
@@ -306,7 +318,7 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         properties_json = json.dumps(properties)
         geometry_json = json.dumps(geometry)
 
-        db.insert_element(guid, element_type, name, properties_json, geometry_json)
+        pending_elements.append((guid, element_type, name, properties_json, geometry_json))
         synced += 1
         new_guids.add(guid)
 
@@ -328,6 +340,13 @@ async def sync_from_archicad(limit: int = 50) -> dict:
         # (engine/site.pyのget_site_boundary()と同じ除外パターン)。
         if is_site_marker_element(element_type, name, archicad_id, layer_name):
             site_guids.append(guid)
+
+    # 全要素の削除+書き込みを1つのトランザクションとして実行する
+    # (db.replace_all_elements()のdocstring参照)。ブロッキング処理を
+    # asyncio.to_thread()で別スレッドに逃がしFastAPIのイベントループを
+    # 塞がないのは他の下流更新(rebuild_connections/index_elements)と
+    # 同じ理由。
+    await asyncio.to_thread(db.replace_all_elements, pending_elements)
 
     legal_conditions_synced = await _sync_legal_condition_properties(site_guids)
 
