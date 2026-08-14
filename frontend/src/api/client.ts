@@ -1,7 +1,19 @@
 // バックエンド(FastAPI)への型付きAPIクライアント。
 // 各コンポーネントで API_BASE をハードコードせず、ここに集約する。
 
-export const API_BASE = "http://localhost:8000";
+// VITE_API_BASE_URL(Viteの規約でVITE_接頭辞の環境変数のみクライアントに
+// 公開される)を優先し、未設定時はローカル開発既定値にフォールバックする。
+// この値はブラウザ側で評価されるため、Dockerコンテナ間のネットワーク
+// (docker-composeのサービス名解決等)とは無関係——EC2等、フロントエンドを
+// localhost以外のホストから配信する場合は、ブラウザから実際に到達できる
+// backendの公開URL(例: https://bim.example.com:8000)を明示的に指定する
+// 必要がある(CORS_ALLOWED_ORIGINS、main.py側の対応と対になる設定)。
+// `npm run dev`(Viteの開発サーバー)はコンテナのprocess.envに設定された
+// VITE_接頭辞の値をそのまま読む(docker-compose.ymlのCHOKIDAR_USEPOLLING等と
+// 同じ経路)。`vite build`によるビルド済み静的配信に切り替える場合は、この
+// 値はビルド時に埋め込まれる点に注意(実行時にコンテナのenvironmentを
+// 変えても反映されない、未対応の将来課題)。
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // timeoutMsを指定すると、その時間内にbackendから応答が無い場合にリクエストを
 // 中断してエラーにする(2026-08-11、AIエージェントが「考え中...」のまま

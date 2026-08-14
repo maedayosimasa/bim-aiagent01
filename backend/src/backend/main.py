@@ -129,13 +129,28 @@ app.mount("/mcp", mcp_asgi_app)
 # ==============================
 # CORS設定
 # React(Vite)からの通信を許可
+# CORS_ALLOWED_ORIGINS(カンマ区切り)で本番のフロントエンドのオリジンを
+# 追加指定できる。未設定時は開発時の既定値(localhost:5173)のみを許可する
+# (EC2等、フロントエンドがlocalhost以外のオリジンから配信される本番環境では
+# 未設定のままだと全リクエストがCORSエラーになるため必須設定)。
 # ==============================
+
+_DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
+
+
+def _resolve_cors_origins() -> list[str]:
+    # docker-compose経由だと未設定時も`CORS_ALLOWED_ORIGINS=`(空文字列)として
+    # 環境変数自体は存在する状態になるため、「未設定」と「空文字列」を同じ
+    # 扱いにする(os.environ.get()のdefault引数だけでは空文字列を拾えない)。
+    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return _DEFAULT_CORS_ORIGINS
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173"
-    ],
+    allow_origins=_resolve_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

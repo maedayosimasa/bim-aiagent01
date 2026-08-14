@@ -63,7 +63,8 @@ BIM空間知能エンジンは以下の順でデータが流れるパイプラ�
 
 横断的関心事(全レイヤーに関わる。現状ほぼ未整備):
 - **API Gateway**: `main.py`(FastAPI)が全レイヤーをRESTとして束ねる。加えて`/mcp`配下にMCPサーバーとしても公開(ローカルLLM/エージェント用ツール口。DNSリバインディング防止は内部通信専用の前提で無効化してある)。
-- **認証・認可**: 未実装。FastAPIエンドポイントに認証が無く、CORSも`http://localhost:5173`固定(本番フロントのオリジン未設定)。
+- **認証・認可**: 未実装。FastAPIエンドポイントに認証が無い。
+- **(2026-08-14追加)CORS許可オリジンを環境変数化した。** きっかけはAWS EC2デプロイの検討(2つの独立したdocker-compose.ymlの統合可否・データ永続化戦略の調査)で、`allow_origins=["http://localhost:5173"]`がコード上に固定されているため、フロントエンドがlocalhost以外のオリジン(EC2の実ドメイン/IP)から配信される本番環境では全リクエストがCORSエラーになることが判明したため。`main.py`の`_resolve_cors_origins()`が新設の環境変数`CORS_ALLOWED_ORIGINS`(カンマ区切りで複数オリジン指定可)を読み、未設定(または空文字列)時は従来通り`http://localhost:5173`のみを既定値とする。docker-compose経由だと未設定でも`CORS_ALLOWED_ORIGINS=`(空文字列)として環境変数自体は存在する状態になるため、「未設定」と「空文字列」を同じ扱いにする実装にしている(`os.environ.get()`のdefault引数だけでは空文字列を拾えないため、`.strip()`後の空文字判定を追加)。回帰テストは`tests/test_main_cors.py`(`_resolve_cors_origins()`の単体テスト)。**このテストファイルは意図的に`backend.main`をモジュールレベルでimportしていない(各テスト関数内で遅延import)**——実装中に一度モジュールレベルでimportしたところ、pytestのcollectionフェーズ(全テスト実行前に全テストファイルをimportする)で`backend.main`の`_load_dotenv_if_present()`(setdefaultでローカルの実`.env`を読み込む副作用)が他のどのテストより早く走ってしまい、`LAND_USE_CATEGORY`等の環境変数を前提とする既存テスト(`test_legal_inputs.py`/`test_agent.py`)がテスト実行順序に依存して失敗する事故を実際に起こした。他の全テストファイルが`backend.main`を`api_client`フィクスチャ経由の遅延importに統一している理由もこれだと判明したため、同じパターンに揃えた。
 - **可観測性**: 未整備。構造化ログが無く`print()`が数箇所あるのみ。Archicad連携の失敗率/レイテンシ、エンジン計算時間などのメトリクスも無い。
 
 ### backend layering
@@ -142,6 +143,15 @@ CLAUDE.md「⑨ RAG / AIエージェント層」の発話→ツール選択→�
 ## 制約・方針
 
 - Archicad連携のWindows側ブリッジ(`archicad-mcp\start_http.ps1`)を起動する仕組みはbackend側に作らない。本番はAWS+Tailscale経由で公開される構成のため、リモートでスクリプトを実行できるエンドポイントは設けず、UIには手動起動を促す案内表示のみを置く。
+
+## AWS EC2デプロイ(2026-08-14着手)
+
+`bim-aiagent01`と`Legal Knowledge Builder`(別リポジトリ)を1台のEC2に同居させてデプロイする構成を検討・着手した。両者のgit管理・更新頻度が異なる(bim-aiagent01は日々更新、Legal Knowledge Builderは法令改正時のみ再ビルド)ため、2つの`docker-compose.yml`を1ファイルへ手で統合するのではなく、両リポジトリの外側に第3のディレクトリ`deployment/`(このリポジトリには含まれない、`bim-aiagent01/`・`legal-knowledge-builder/`と同じ階層に置く)を新設し、Docker Composeの`include:`(v2.20.0以降)で両者を取り込んで繋ぐだけの薄い接着層とした。各リポジトリの`docker-compose.yml`自体は変更していない(`legal-knowledge-builder`用のDockerfile+composeサービス新設は除く、後述)。詳細・起動手順は`deployment/README.md`参照。
+
+- **CORS許可オリジンの環境変数化**: 上記「横断的関心事」参照(`CORS_ALLOWED_ORIGINS`)。
+- **Legal Knowledge Builder側にDockerfile+composeサービスを新規追加した**(そのリポジトリのCLAUDE.md参照)。従来`serve`(検索API)はコンテナ化されておらず、`docker-compose.yml`にはpostgres/neo4j(いずれも任意)しか定義が無かった。knowledge/(Knowledge Package、約260MB)はビルド成果物でOneDrive依存のingestパイプラインでしか生成できずEC2では再生成できないため、イメージには焼き込まずbind mountする方式にした。
+- **ネットワーク**: `deployment/compose.yaml`が`networks.default.name`を明示的に設定するだけで、両リポジトリの(`network_mode`指定の無い)全サービスが同一ネットワークに自動参加し、コンテナ名で相互到達できるようになる。backendは`network_mode: service:tailscale`でtailscaleのネットワーク名前空間を共有しているため、tailscale自体がこのネットワークに参加することでbackendも間借りする形で到達できる。`LEGAL_API_URL`は`http://legal-knowledge-builder:8100`(コンテナ名解決、ゲートウェイIP指定が不要になる)。
+- **(2026-08-14対応済み)フロントエンドの`API_BASE`を環境変数化した。** `frontend/src/api/client.ts`の`API_BASE`がコード上に`http://localhost:8000`固定だったため、ブラウザ側で評価される値であるにもかかわらず、CORS環境変数化(上記)だけではEC2上のフロントエンドから実際にはbackendへ到達できない状態だった(Dockerのコンテナ間ネットワークとは無関係な、ブラウザ→インターネット越しの通信のため)。`API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"`に変更し、Vite標準の`VITE_`接頭辞環境変数(`import.meta.env`経由でクライアントに公開される)で上書きできるようにした。`docker-compose.yml`のfrontendサービスに`VITE_API_BASE_URL`を追加、`deployment/compose.prod.yaml`では`.env`の`BACKEND_PUBLIC_URL`(`FRONTEND_ORIGIN`とは別の値、同じEC2ホストのポート違いを指すため自動導出せず両方手動設定する仕様)を渡す。**既知の制約**: この値は`npm run dev`(Viteの開発サーバー)が稼働中はコンテナ起動時のprocess.envから毎回読まれるが、将来`vite build`によるビルド済み静的配信に切り替えた場合はビルド時に埋め込まれる値になり、コンテナの`environment`を変えるだけでは反映されなくなる(下記「本格的な本番ハードニング」と合わせて対応が必要、現時点では未着手)。両リポジトリのDockerfileは開発用パターン(ホットリロード)のまま据え置いている(現状「まだ開発環境」という前提のため意図的)。
 
 ## 今後の開発計画(未着手)
 
@@ -307,5 +317,5 @@ CLAUDE.md「⑥ 空間知能エンジン」の追加モジュール案は`equipm
 
 ### 横断的関心事
 
-- 認証・認可の実装(現状FastAPIエンドポイントに認証なし、CORSも`http://localhost:5173`固定)
+- 認証・認可の実装(現状FastAPIエンドポイントに認証なし。CORSは2026-08-14に環境変数化済み、上記「横断的関心事」参照)
 - 可観測性の整備(構造化ログ、Archicad連携の失敗率/レイテンシ、エンジン計算時間などのメトリクス)

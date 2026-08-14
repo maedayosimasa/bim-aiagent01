@@ -11,6 +11,10 @@ services:
       - /app/node_modules
     environment:
       - CHOKIDAR_USEPOLLING=true
+      # ブラウザから見たbackendの公開URL(frontend/src/api/client.ts参照)。
+      # 未設定時はローカル開発既定値(http://localhost:8000)にフォールバックする。
+      # EC2等、localhost以外のホストからフロントエンドを配信する場合は必須。
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-}
     depends_on:
       - backend
 
@@ -79,6 +83,10 @@ services:
       # 有効採光面積比の法定計算(engine/effective_daylighting.py)で使う
       # 用途地域カテゴリ。BIMデータからは判定できないため手動指定。
       - LAND_USE_CATEGORY=${LAND_USE_CATEGORY:-residential}
+      # フロントエンドを配信するオリジン(カンマ区切りで複数可)。CORS許可リスト。
+      # 未設定時はローカル開発既定値(http://localhost:5173)のみ許可される。
+      # 本番(EC2等)ではフロントエンドの実際のURLを明示的に指定すること。
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
     depends_on:
       - chromadb
       - tailscale
