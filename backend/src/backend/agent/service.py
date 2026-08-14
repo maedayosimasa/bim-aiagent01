@@ -231,12 +231,52 @@ async def _finish_turn(session_id: str, result: dict) -> dict:
     }
 
 
+async def _has_existing_conversation(session_id: str) -> bool:
+    """session_idに既存の会話履歴(1ターン以上)があるかを確認する。
+
+    (2026-08-14追加、実データで発覚した不具合の修正)route_tools()による
+    絞り込みは発話のたびに独立して行われる。ある発話でLEGAL_TOOLS
+    (法令検索・Rule Engine)を使って応答した会話でも、続くターンの発話
+    キーワードがたまたま一致しなければLEGAL_TOOLSは除外されうる。しかし
+    会話履歴(checkpointer)は絞り込み済みエージェントの間でも共有されて
+    いるため、モデルは前のターンで使ったツール名を会話履歴から見て憶えた
+    まま今回バインドされていないツールを呼ぼうとしてしまい、Anthropic API
+    が"XXX is not a valid tool"エラーを返す(ユーザーが道路斜線制限の判定を
+    複数ターンに渡って依頼したところ、2ターン目以降で`engine_legal_rules_
+    evaluate_tool`/`legal_search_tool`が「利用できないツール」として扱われた
+    という報告で発覚)。この関数はrun_chat()が「継続中の会話かどうか」を
+    判定し、継続中なら絞り込みをスキップして常に全ツールを渡すために使う
+    (resume_chat()が常に全ツールセットを使うのと同じ考え方、モジュール
+    docstring参照)。
+
+    checkpointerが未設定(_checkpointer is None、永続化なし)の場合は
+    aget_state()自体がValueErrorを送出する。永続化が無ければそもそも
+    ターンをまたいだ会話継続は起こり得ない(このプロセスの生存中の一時的な
+    キャッシュすら共有されない)ため、Falseを返して従来通りroute_tools()に
+    絞り込みを任せる。
+    """
+    if _checkpointer is None:
+        return False
+
+    agent = _get_agent()
+    config = {"configurable": {"thread_id": session_id}}
+    state = await agent.aget_state(config)
+    messages = state.values.get("messages", []) if state.values else []
+    return bool(messages)
+
+
 async def run_chat(session_id: str, message: str) -> dict:
     # (2026-08-13追加、Router)発話のキーワードから関連しそうなツール集合を
     # 絞り込む(agent/router.py)。判定に迷う場合は全ツールにフォールバック
     # するため、応答できる範囲が狭まることはない(絞り込みはあくまで
     # プロンプト中のツール一覧を小さくするための最適化)。
-    tools = route_tools(message)
+    # (2026-08-14追加)ただし会話の2ターン目以降には絞り込みを適用しない
+    # ——_has_existing_conversation()参照、会話継続中にツールが消える不具合
+    # を避けるため、既存の会話には常に全ツールを渡す。
+    if await _has_existing_conversation(session_id):
+        tools = AGENT_TOOLS
+    else:
+        tools = route_tools(message)
     agent = _get_routed_agent(tools)
     config = {"configurable": {"thread_id": session_id}}
 

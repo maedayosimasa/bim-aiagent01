@@ -107,6 +107,49 @@ def test_run_chat_without_tool_call(monkeypatch):
     assert result["tool_calls"] == []
 
 
+def test_run_chat_uses_full_toolset_from_second_turn_onward(monkeypatch, test_db):
+    # (2026-08-14追加、実データで発覚した不具合の回帰テスト)route_tools()
+    # による絞り込みは発話ごとに独立して行われるため、ある発話でLEGAL_TOOLS
+    # を使って応答した会話でも、続くターンの発話キーワードが一致しなければ
+    # LEGAL_TOOLSが除外されうる。しかし会話履歴は絞り込み済みエージェント間
+    # でも共有されているため、モデルが前のターンで使ったツールを会話履歴
+    # から見て再度呼ぼうとした際、そのツールが今回バインドされていなければ
+    # Anthropic APIが"XXX is not a valid tool"エラーを返していた
+    # (ユーザーが道路斜線制限の判定を複数ターンに渡って依頼したところ、
+    # 2ターン目以降でengine_legal_rules_evaluate_tool/legal_search_toolが
+    # 「利用できないツール」として扱われたという報告で発覚)。
+    # route_tools()が常に極端に狭い1件だけのツール集合を返すよう固定しても、
+    # 2ターン目のrun_chat()は_has_existing_conversation()により全ツールを
+    # 使うことを、_get_routed_agent()への呼び出しを記録して確認する。
+    # (会話履歴の永続化が無いと2ターン目でも「既存の会話」と判定できない
+    # ため、InMemorySaverを明示的に設定する)。
+    agent_service.set_checkpointer(InMemorySaver())
+    responses = [
+        AIMessage(content="1ターン目の応答"),
+        AIMessage(content="2ターン目の応答"),
+    ]
+    _install_fake_model(monkeypatch, responses)
+
+    from backend.agent.tools import AGENT_TOOLS, list_bim_elements_tool
+
+    monkeypatch.setattr(agent_service, "route_tools", lambda message: [list_bim_elements_tool])
+
+    calls = []
+    original_get_routed_agent = agent_service._get_routed_agent
+
+    def _spy(tools):
+        calls.append(sorted(t.name for t in tools))
+        return original_get_routed_agent(tools)
+
+    monkeypatch.setattr(agent_service, "_get_routed_agent", _spy)
+
+    asyncio.run(agent_service.run_chat("session-routing", "1ターン目"))
+    asyncio.run(agent_service.run_chat("session-routing", "2ターン目"))
+
+    assert calls[0] == ["list_bim_elements_tool"]
+    assert calls[1] == sorted(t.name for t in AGENT_TOOLS)
+
+
 def test_run_chat_records_token_usage(monkeypatch, test_db):
     # ReActループ内でツール呼び出しを挟み2回LLMを呼ぶケース。両方のAIMessageの
     # usage_metadataが合算されて、session_id単位の1「作業」として記録される
