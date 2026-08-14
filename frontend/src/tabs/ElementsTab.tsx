@@ -144,6 +144,16 @@ function ElementsTab() {
         (差分マージではありません)。開発時のデータ確認用途を想定しています。
       </p>
       <p className="hint">
+        (2026-08-14追加)同期のたびに前回の内容と比較し、追加・変更・削除
+        された要素があれば、空間関係(隣接・接続)の再計算と検索インデックス
+        の更新が自動的に行われます。何も変化が無い場合はこれらの処理を
+        スキップするため、変化が無ければ数秒で完了します(初回同期・大量の
+        変更がある場合は検索インデックスの更新に数十秒かかることがあります)。
+        「関係を再構築」「検索インデックス化」は通常は不要ですが、キャッシュの
+        不整合が疑われる場合などに手動で全件を強制的に再実行するためのボタン
+        として残しています。
+      </p>
+      <p className="hint">
         行をクリックするとArchicad本体でも同じ要素が選択+ハイライトされます
         (ブリッジ接続時のみ)。画面をその位置までスクロールする機能はArchicad側の
         APIにないため、選択された要素を手動で探してください。
@@ -157,10 +167,10 @@ function ElementsTab() {
           onClick={() => rebuildMutation.mutate()}
           disabled={rebuildMutation.isPending}
         >
-          {rebuildMutation.isPending ? "再構築中..." : "関係を再構築"}
+          {rebuildMutation.isPending ? "再構築中..." : "関係を手動で再構築(通常は同期時に自動実行)"}
         </button>
         <button onClick={() => indexMutation.mutate()} disabled={indexMutation.isPending}>
-          {indexMutation.isPending ? "インデックス中..." : "検索インデックス化"}
+          {indexMutation.isPending ? "インデックス中..." : "検索インデックスを手動で全件再構築"}
         </button>
         <button onClick={() => invalidateElements()} disabled={elementsQuery.isFetching}>
           {elementsQuery.isFetching ? "取得中..." : "一覧を再取得"}
@@ -171,6 +181,21 @@ function ElementsTab() {
         {syncMutation.isSuccess && (
           <span>
             同期完了: {syncMutation.data.synced}/{syncMutation.data.requested}件
+            (追加{syncMutation.data.diff.added}・変更{syncMutation.data.diff.changed}・
+            削除{syncMutation.data.diff.removed}・不変{syncMutation.data.diff.unchanged})
+            {syncMutation.data.relations_rebuilt ? (
+              <> / 関係再計算: {syncMutation.data.relations_count}件</>
+            ) : (
+              <> / 変化なしのため関係再計算・インデックス更新はスキップしました</>
+            )}
+            {syncMutation.data.relations_rebuilt && (
+              <>
+                {" "}
+                / インデックス更新: {syncMutation.data.index_updated_count}件追加・更新
+                {syncMutation.data.index_removed_count > 0 &&
+                  `、${syncMutation.data.index_removed_count}件削除`}
+              </>
+            )}
           </span>
         )}
         {syncMutation.isError && <span className="error">{String(syncMutation.error)}</span>}

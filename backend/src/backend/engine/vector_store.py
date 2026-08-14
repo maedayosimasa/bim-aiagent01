@@ -161,10 +161,24 @@ def _relations_by_guid():
 _UPSERT_BATCH_SIZE = 1000
 
 
-def index_elements(client=None, embedding_function=None):
+def index_elements(client=None, embedding_function=None, guids=None):
+    """要素をChromaDBへupsertする。
+
+    guids(2026-08-14追加、archicad_mcp/server.pyのsync_from_archicad()の
+    差分検知から呼ばれる)を指定すると、その要素だけを対象にする
+    (インクリメンタル更新——実データ5706件のフル再インデックスは約46秒
+    かかるため、同期のたびに変更の無い大多数の要素まで毎回埋め込み直すのは
+    非現実的。追加・変更された要素だけをここで絞り込む)。省略時(None)は
+    従来通り全要素が対象(手動の「検索インデックス化」ボタン向け)。
+    """
     collection = get_collection(client, embedding_function)
 
     elements = get_elements()
+
+    if guids is not None:
+        guid_set = set(guids)
+        elements = [element for element in elements if element["guid"] in guid_set]
+
     relations_by_guid = _relations_by_guid()
 
     if not elements:
@@ -189,6 +203,23 @@ def index_elements(client=None, embedding_function=None):
         )
 
     return len(ids)
+
+
+def remove_from_index(guids, client=None, embedding_function=None):
+    """指定guidをChromaDBのインデックスから削除する。
+
+    (2026-08-14追加)sync_from_archicad()の全削除→差し替え方式では、
+    Archicad側で削除された要素がelementsテーブルからは消えても、
+    index_elements()はupsert(=追加/更新のみ)しか行わないため、削除された
+    要素の埋め込みだけがインデックスに永久に残り続ける("ghost"エントリ)
+    という不具合があった。差分検知で判明した削除guidをここで明示的に
+    削除する。guidsが空なら何もしない(ChromaDBへの無駄な呼び出しを避ける)。
+    """
+    if not guids:
+        return
+
+    collection = get_collection(client, embedding_function)
+    collection.delete(ids=list(guids))
 
 
 def search_elements(query, n_results=5, client=None, embedding_function=None):

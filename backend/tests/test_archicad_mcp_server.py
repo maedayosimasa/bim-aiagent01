@@ -5,6 +5,7 @@ from mcp import ClientSession
 from mcp.client._memory import InMemoryTransport
 
 from backend.archicad_mcp import client as archicad_client
+from backend.archicad_mcp import server as server_module
 from backend.archicad_mcp.server import mcp_server
 from backend.database import db
 from tests.test_tapir import _make_fake_tapir_server
@@ -172,6 +173,91 @@ def test_sync_from_archicad_tool_populates_cache(test_db, monkeypatch):
     assert zone_properties["zone_category"] == "住宅-1"
 
 
+def test_sync_from_archicad_tool_first_sync_marks_all_elements_added(test_db, monkeypatch):
+    # (2026-08-14追加、差分検知)初回同期(既存データ無し)では全要素が
+    # "added"になり、関係の再計算・検索インデックスへの追加が行われる
+    # ことを確認する。
+    _patch_fake_tapir_transport(monkeypatch)
+
+    result = call_mcp_tool("sync_from_archicad", {"limit": 10})
+    payload = _payload(result)
+
+    assert payload["diff"] == {"added": 2, "changed": 0, "removed": 0, "unchanged": 0}
+    assert payload["relations_rebuilt"] is True
+    assert payload["index_updated_count"] == 2
+    assert payload["index_removed_count"] == 0
+
+
+def test_sync_from_archicad_tool_skips_downstream_updates_when_unchanged(test_db, monkeypatch):
+    # (2026-08-14追加、差分検知)以前は同期のたびに関係の再計算・検索
+    # インデックスの更新が一切自動化されておらず、フロントエンド「要素同期」
+    # タブの3つの独立したボタンをユーザーが手動で押す必要があった。ユーザー
+    # からの「差分を確認し、計算や表示をそれぞれのデータベースで確実に
+    # 更新するように」という依頼を受け、同期処理自体に統合した——ただし
+    # 変化が無い場合(2回目以降、同じArchicadデータのまま再同期した場合)
+    # まで毎回フル再計算・フル再インデックスするのは非効率(実データ5706件で
+    # 検索インデックスのフル再構築は約46秒かかる)なため、下流の更新処理
+    # 自体をスキップする。rebuild_connections/index_elements/remove_from_
+    # indexをスパイに差し替え、2回目の同期(データ不変)では一切呼ばれない
+    # ことを確認する。
+    _patch_fake_tapir_transport(monkeypatch)
+
+    calls = []
+    monkeypatch.setattr(
+        server_module, "rebuild_connections", lambda: calls.append("rebuild") or []
+    )
+    monkeypatch.setattr(
+        server_module, "index_elements",
+        lambda **kwargs: calls.append(("index", kwargs)) or 0,
+    )
+    monkeypatch.setattr(
+        server_module, "remove_from_index",
+        lambda guids, **kwargs: calls.append(("remove", list(guids))),
+    )
+
+    call_mcp_tool("sync_from_archicad", {"limit": 10})  # 1回目: 全件added
+    calls.clear()
+
+    result = call_mcp_tool("sync_from_archicad", {"limit": 10})  # 2回目: 内容不変
+    payload = _payload(result)
+
+    assert payload["diff"] == {"added": 0, "changed": 0, "removed": 0, "unchanged": 2}
+    assert payload["relations_rebuilt"] is False
+    assert payload["index_updated_count"] == 0
+    assert payload["index_removed_count"] == 0
+    assert calls == []
+
+
+def test_sync_from_archicad_tool_detects_changed_and_removed_elements(test_db, monkeypatch):
+    # 既存データにguid-1(異なる名前で事前登録=変更として検出されるはず)と
+    # guid-999(今回のフェイクサーバーには存在しない=削除として検出される
+    # はず)を仕込んでおく。guid-2は未登録なので追加として検出される。
+    _patch_fake_tapir_transport(monkeypatch)
+
+    test_db.insert_element(
+        "guid-1", "Wall", "旧名称",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[0, 0], [4000, 0]]}),
+    )
+    test_db.insert_element(
+        "guid-999", "Wall", "削除される壁",
+        json.dumps({}),
+        json.dumps({"type": "line", "points": [[0, 0], [1000, 0]]}),
+    )
+
+    result = call_mcp_tool("sync_from_archicad", {"limit": 10})
+    payload = _payload(result)
+
+    assert payload["diff"] == {"added": 1, "changed": 1, "removed": 1, "unchanged": 0}
+    assert payload["relations_rebuilt"] is True
+    assert payload["index_updated_count"] == 2  # 追加(guid-2) + 変更(guid-1)
+    assert payload["index_removed_count"] == 1  # guid-999
+
+    # guid-999はelementsテーブルからも実際に削除されている
+    # (sync_from_archicad()の全削除→差し替え方式による、既存の挙動)。
+    assert db.get_element("guid-999") is None
+
+
 def test_list_archicad_properties_tool(test_db, monkeypatch):
     _patch_fake_tapir_transport(monkeypatch)
 
@@ -272,7 +358,16 @@ def test_sync_from_archicad_tool_with_no_elements(test_db, monkeypatch):
 
     result = call_mcp_tool("sync_from_archicad", {"limit": 10})
 
-    assert _payload(result) == {"synced": 0, "requested": 0}
+    assert _payload(result) == {
+        "synced": 0,
+        "requested": 0,
+        "legal_conditions_synced": {},
+        "diff": {"added": 0, "changed": 0, "removed": 0, "unchanged": 0},
+        "relations_rebuilt": False,
+        "relations_count": None,
+        "index_updated_count": 0,
+        "index_removed_count": 0,
+    }
 
 
 def test_sync_from_archicad_tool_populates_legal_conditions_for_site_zone(test_db, monkeypatch):

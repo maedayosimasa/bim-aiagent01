@@ -7,6 +7,7 @@ from backend.engine.relation_builder import rebuild_connections
 from backend.engine.vector_store import (
     KeywordEmbeddingFunction,
     index_elements,
+    remove_from_index,
     search_elements,
     _describe_element,
 )
@@ -72,6 +73,75 @@ def test_index_elements_splits_into_batches_when_exceeding_batch_size(
         vector_store.COLLECTION_NAME, embedding_function=fake_embedding_function
     )
     assert collection.count() == 5
+
+
+def test_index_elements_with_guids_only_indexes_matching_elements(
+    sample_elements, chroma_client, fake_embedding_function
+):
+    # (2026-08-14追加)archicad_mcp/server.pyのsync_from_archicad()が
+    # 差分検知で判明した追加/変更guidだけをインクリメンタルに再インデックス
+    # するために使う(実データ5706件のフル再インデックスは約46秒かかり、
+    # 変更の無い大多数の要素まで毎回埋め込み直すのは非現実的なため)。
+    rebuild_connections()
+
+    count = index_elements(
+        client=chroma_client, embedding_function=fake_embedding_function,
+        guids=["room001"],
+    )
+
+    assert count == 1
+
+    collection = chroma_client.get_or_create_collection(
+        "bim_elements", embedding_function=fake_embedding_function
+    )
+    assert collection.count() == 1
+    assert collection.get(ids=["room001"])["ids"] == ["room001"]
+
+
+def test_index_elements_with_empty_guids_indexes_nothing(
+    sample_elements, chroma_client, fake_embedding_function
+):
+    count = index_elements(
+        client=chroma_client, embedding_function=fake_embedding_function, guids=[],
+    )
+
+    assert count == 0
+
+
+def test_remove_from_index_deletes_specified_ids(
+    sample_elements, chroma_client, fake_embedding_function
+):
+    # (2026-08-14追加)sync_from_archicad()の全削除→差し替え方式では、
+    # Archicad側で削除された要素がelementsテーブルからは消えても、
+    # index_elements()はupsert(追加/更新のみ)しか行わないため、以前は
+    # 削除された要素の埋め込みが検索インデックスに永久に残り続ける
+    # "ghost"エントリになっていた。remove_from_index()で明示的に削除
+    # できることを確認する。
+    rebuild_connections()
+    index_elements(client=chroma_client, embedding_function=fake_embedding_function)
+
+    collection = chroma_client.get_or_create_collection(
+        "bim_elements", embedding_function=fake_embedding_function
+    )
+    assert collection.count() == 4
+
+    remove_from_index(
+        ["room001"], client=chroma_client, embedding_function=fake_embedding_function
+    )
+
+    assert collection.count() == 3
+    assert collection.get(ids=["room001"])["ids"] == []
+
+
+def test_remove_from_index_with_empty_guids_is_noop(monkeypatch):
+    # ChromaDBへの無駄な呼び出しを避けるため、空リストなら早期リターンする
+    # (get_collection()すら呼ばれない)ことを確認する。
+    called = []
+    monkeypatch.setattr(vector_store, "get_collection", lambda *a, **kw: called.append(1))
+
+    remove_from_index([])
+
+    assert called == []
 
 
 def test_search_elements_finds_relevant_element_by_text(

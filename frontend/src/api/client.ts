@@ -402,8 +402,31 @@ export function setArchicadConnection(url: string | null) {
   );
 }
 
+// (2026-08-14追加)同期時に検出された差分(追加/変更/削除/不変の件数)と、
+// それに基づき自動的に更新された下流ストア(空間関係・検索インデックス)の
+// 内容。archicad_mcp/server.pyのsync_from_archicad()のモジュールdocstring
+// 参照——以前は同期しても関係の再計算・検索インデックスの更新が自動化
+// されておらず、ユーザーが3つのボタンを個別に押す必要があった。
+export type SyncDiffSummary = {
+  added: number;
+  changed: number;
+  removed: number;
+  unchanged: number;
+};
+
+export type SyncFromArchicadResponse = {
+  synced: number;
+  requested: number;
+  legal_conditions_synced: Record<string, Record<string, string>>;
+  diff: SyncDiffSummary;
+  relations_rebuilt: boolean;
+  relations_count: number | null;
+  index_updated_count: number;
+  index_removed_count: number;
+};
+
 export function syncFromArchicad(limit = 50) {
-  return post<{ synced: number; requested: number }>("/archicad/sync", { limit });
+  return post<SyncFromArchicadResponse>("/archicad/sync", { limit });
 }
 
 export function getArchicadProperties() {

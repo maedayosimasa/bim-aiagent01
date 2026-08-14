@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from mcp.server.mcpserver import MCPServer
@@ -7,7 +8,7 @@ from ..engine.legal_inputs import ARCHICAD_LEGAL_PROPERTY_KEYWORDS
 from ..engine.relation_builder import rebuild_connections
 from ..engine.site import is_site_marker_element
 from ..engine.spatial import analyze_space
-from ..engine.vector_store import search_elements
+from ..engine.vector_store import index_elements, remove_from_index, search_elements
 from ..graph.geometry import geometry_from_json
 from . import client as archicad_client
 from . import tapir
@@ -197,12 +198,58 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     「法条件」グループへ入力している)も取得し、properties.legal_conditions
     として保存する(_sync_legal_condition_properties()参照)。engine/
     legal_inputs.pyのresolve_legal_input()がこれを読む。
+
+    (2026-08-14追加、差分検知に基づく下流ストアの自動更新)以前は同期を
+    実行しても`connections`(空間関係)・ChromaDB検索インデックスは古いまま
+    放置され、フロントエンド「要素同期」タブの3つの独立したボタン(同期→
+    関係再構築→検索インデックス化)をユーザーが手動で順番に押す必要が
+    あった(CLAUDE.md「⑧ 埋め込み/インデックス層」に記載していた既知の
+    ギャップ)。ユーザーから「BIMから取り込んだデータに変更があれば、差分を
+    確認し、計算や表示をそれぞれのデータベースで確実に更新するように」との
+    依頼を受け、以下を同期処理自体に統合した:
+      1. `db.clear_elements()`で消える前の既存要素(guid→type/name/
+         properties/geometry)を退避し、今回同期する内容と突き合わせて
+         追加(added)・変更(changed)・削除(removed)・不変(unchanged)を
+         判定する。
+      2. 追加・変更・削除が1件でもあれば`rebuild_connections()`
+         (`connections`/`graph_relation_results`の再計算、実測0.2秒程度と
+         軽量なため差分の大小に関わらず常にフル再計算する)を実行する。
+      3. ChromaDB検索インデックスは追加・変更されたguidのみを`index_
+         elements(guids=...)`でインクリメンタル更新し(実データ5706件の
+         フル再インデックスは約46秒かかるため、変更の無い大多数の要素まで
+         毎回埋め込み直すのは非現実的)、削除されたguidは`remove_from_
+         index()`でインデックスからも削除する(以前は削除された要素の
+         埋め込みが永久にインデックスに残り続ける"ghost"エントリになる
+         不具合があった——`index_elements()`はupsertのみで削除を伴わない
+         ため)。
+      4. 何も変わっていない場合(全要素が既存内容と完全一致)はこれらの
+         処理を一切実行しない(法規レポートの差分キャッシュ
+         (`agent/report_graph.py`)と同じ考え方)。
+    `rebuild_connections()`/`index_elements()`/`remove_from_index()`は
+    いずれも同期処理を待たせるブロッキング処理(特にindex_elements()は
+    要素数に応じて数秒〜数十秒かかりうる)なので、`asyncio.to_thread()`で
+    実行しFastAPIのイベントループを塞がないようにする(`/bim/index`等の
+    既存の同期(sync)エンドポイントはFastAPIの通常のスレッドプール実行に
+    任せているが、`sync_from_archicad()`自体は`async def`のため明示的な
+    委譲が必要)。`engine_analysis_results`(`/analyze`、model_id必須の
+    診断用スナップショット)は自動更新の対象に含めていない——特定の
+    model_idを推測する妥当な根拠が無く、他のengine計算はこのスナップ
+    ショットに依存しない(呼び出しのたびに独立して再計算する)ため。
     """
     all_guids = await tapir.get_all_element_guids()
     guids = all_guids if limit <= 0 else all_guids[:limit]
 
     if not guids:
-        return {"synced": 0, "requested": 0}
+        return {
+            "synced": 0,
+            "requested": 0,
+            "legal_conditions_synced": {},
+            "diff": {"added": 0, "changed": 0, "removed": 0, "unchanged": 0},
+            "relations_rebuilt": False,
+            "relations_count": None,
+            "index_updated_count": 0,
+            "index_removed_count": 0,
+        }
 
     details_list = await tapir.get_details_of_elements(guids)
     bounding_boxes = await tapir.get_bounding_boxes(guids)
@@ -214,10 +261,22 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     }
     layer_name_by_index = {layer["index"]: layer["name"] for layer in layers}
 
+    # (2026-08-14追加)clear_elements()で消える前に、差分判定用に既存の
+    # 内容(guid→type/name/properties/geometryの4つ組)を退避しておく。
+    previous_elements = {
+        element["guid"]: (
+            element["type"], element["name"], element["properties"], element["geometry"]
+        )
+        for element in db.get_elements()
+    }
+
     db.clear_elements()
 
     synced = 0
     site_guids = []
+    new_guids: set[str] = set()
+    added_guids: list[str] = []
+    changed_guids: list[str] = []
 
     for guid, details_item, bbox_item in zip(guids, details_list, bounding_boxes):
         element_type = details_item.get("type", "Unknown")
@@ -244,10 +303,18 @@ async def sync_from_archicad(limit: int = 50) -> dict:
             "zone_category": zone_category,
         }
 
-        db.insert_element(
-            guid, element_type, name, json.dumps(properties), json.dumps(geometry)
-        )
+        properties_json = json.dumps(properties)
+        geometry_json = json.dumps(geometry)
+
+        db.insert_element(guid, element_type, name, properties_json, geometry_json)
         synced += 1
+        new_guids.add(guid)
+
+        previous = previous_elements.get(guid)
+        if previous is None:
+            added_guids.append(guid)
+        elif previous != (element_type, name, properties_json, geometry_json):
+            changed_guids.append(guid)
 
         # (2026-08-14実データ調査で修正)matches_zone_keyword()のarchicad_id/
         # layer_name照合はMesh限定(敷地境界線の幾何取得という別の用途向けの
@@ -264,10 +331,47 @@ async def sync_from_archicad(limit: int = 50) -> dict:
 
     legal_conditions_synced = await _sync_legal_condition_properties(site_guids)
 
+    removed_guids = [guid for guid in previous_elements if guid not in new_guids]
+    changed_or_added_guids = added_guids + changed_guids
+    has_changes = bool(changed_or_added_guids or removed_guids)
+
+    relations_count = None
+    indexed_count = 0
+    removed_from_index_count = 0
+
+    if has_changes:
+        # rebuild_connections()/index_elements()/remove_from_index()は
+        # いずれもブロッキング処理(index_elements()は要素数によっては
+        # 数十秒かかる)なので、async defであるこの関数から直接呼ぶと
+        # FastAPIのイベントループを塞いでしまう。to_thread()で別スレッドに
+        # 逃がす(モジュールdocstring参照)。
+        relations = await asyncio.to_thread(rebuild_connections)
+        relations_count = len(relations)
+
+        if changed_or_added_guids:
+            indexed_count = await asyncio.to_thread(
+                index_elements, guids=changed_or_added_guids
+            )
+        if removed_guids:
+            await asyncio.to_thread(remove_from_index, removed_guids)
+            removed_from_index_count = len(removed_guids)
+
     return {
         "synced": synced,
         "requested": len(guids),
         "legal_conditions_synced": legal_conditions_synced,
+        # (2026-08-14追加)差分検知の結果と、それに基づき自動更新した
+        # 下流ストア(connections/ChromaDB検索インデックス)の内容。
+        "diff": {
+            "added": len(added_guids),
+            "changed": len(changed_guids),
+            "removed": len(removed_guids),
+            "unchanged": synced - len(added_guids) - len(changed_guids),
+        },
+        "relations_rebuilt": has_changes,
+        "relations_count": relations_count,
+        "index_updated_count": indexed_count,
+        "index_removed_count": removed_from_index_count,
     }
 
 
