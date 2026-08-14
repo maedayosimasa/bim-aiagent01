@@ -213,7 +213,7 @@ def test_list_legal_report_history_returns_newest_first_without_checks_json(test
     entries = db.list_legal_report_history()
 
     assert [e["report"] for e in entries] == ["2件目", "1件目"]
-    assert set(entries[0].keys()) == {"id", "generated_at", "report"}
+    assert set(entries[0].keys()) == {"id", "generated_at", "report", "reused_from_id"}
 
 
 def test_list_legal_report_history_respects_limit(test_db):
@@ -224,3 +224,36 @@ def test_list_legal_report_history_respects_limit(test_db):
     entries = db.list_legal_report_history(limit=2)
 
     assert len(entries) == 2
+
+
+def test_save_legal_report_records_reused_from_id(test_db):
+    # (2026-08-14追加、差分キャッシュ)LLMを呼ばずレポート文を再利用した
+    # 場合、参照元行のidをreused_from_idに記録する。
+    checks = _sample_legal_report_checks()
+    first_id_generated_at = db.save_legal_report("1件目", checks)
+    first_entry = db.list_legal_report_history()[0]
+
+    db.save_legal_report("1件目(再利用)", checks, reused_from_id=first_entry["id"])
+
+    entries = db.list_legal_report_history()
+    assert entries[0]["reused_from_id"] == first_entry["id"]
+    assert entries[1]["reused_from_id"] is None
+    assert first_id_generated_at  # 型確認(生成時刻が返る既存の契約を壊していないこと)
+
+
+def test_get_latest_legal_report_returns_none_when_empty(test_db):
+    assert db.get_latest_legal_report() is None
+
+
+def test_get_latest_legal_report_returns_most_recent_entry(test_db):
+    checks1 = _sample_legal_report_checks()
+    checks2 = _sample_legal_report_checks()
+    checks2[0]["items"][0]["status"] = "fail"
+
+    db.save_legal_report("1件目", checks1)
+    db.save_legal_report("2件目", checks2)
+
+    latest = db.get_latest_legal_report()
+
+    assert latest["report"] == "2件目"
+    assert json.loads(latest["checks_json"]) == checks2

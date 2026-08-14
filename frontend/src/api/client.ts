@@ -588,6 +588,11 @@ export type LegalReportResponse = {
   // 保存された際のタイムスタンプ(基準値・参照値・判定を含む全内容が
   // 保存されるようになった、agent/service.py参照)。
   generated_at: string;
+  // (2026-08-14追加、差分キャッシュ)前回の判定結果と完全一致したため、
+  // LLMを呼ばず前回のレポート文をそのまま返した場合、その参照元の
+  // legal_report_history行id。新規にLLMで生成した場合はnull
+  // (agent/report_graph.pyの`_check_for_reuse`ノード参照)。
+  reused_from_id: number | null;
 };
 
 // (2026-08-14発見・同日修正)/agent/legal_reportがAGENT_TIMEOUT_MS(3分)で

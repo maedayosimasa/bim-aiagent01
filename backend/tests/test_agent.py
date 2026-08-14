@@ -455,6 +455,65 @@ def test_run_legal_report_persists_full_check_detail_to_db(monkeypatch, sample_e
     assert door_check["items"][0]["status"] == "unknown"
 
 
+def test_run_legal_report_reuses_previous_report_when_checks_unchanged(monkeypatch, sample_elements):
+    # (2026-08-14追加、差分キャッシュの回帰テスト)ユーザーからの「差分で
+    # 再表示のシステムを組み込めば早くならないか」という提案を受けて実装。
+    # BIMデータ・環境変数が変わらなければ2回目のrun_legal_report()は
+    # generate_reportノード(LLM呼び出し)をスキップし、前回のレポート文を
+    # そのまま再利用することを確認する。フェイクモデルにはレスポンスを
+    # 1件しか用意していないため、もしLLMが再度呼ばれてしまえば
+    # IndexErrorで検出できる(fake_model.callsによる直接確認と二重の保証)。
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    fake_model = _FakeToolCallingModel(responses=[AIMessage(
+        content="初回レポート",
+        usage_metadata={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+    )])
+    monkeypatch.setattr(agent_report_graph, "ChatAnthropic", lambda model: fake_model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    first = asyncio.run(agent_service.run_legal_report())
+    assert first["report"] == "初回レポート"
+    assert first["reused_from_id"] is None
+    assert fake_model.calls == 1
+
+    second = asyncio.run(agent_service.run_legal_report())
+
+    assert second["report"] == "初回レポート"
+    assert second["reused_from_id"] is not None
+    assert fake_model.calls == 1  # LLMは再度呼ばれていない
+
+    entries = db_module.list_legal_report_history()
+    assert len(entries) == 2
+    assert entries[0]["reused_from_id"] == entries[1]["id"]  # 新しい方(index 0)が古い方を参照
+
+    # 再利用時はトークン使用量を記録しない(LLMを呼んでいないため、
+    # 0件の意味の無い行が増えるだけになる)。
+    jobs = [j for j in db_module.get_token_usage_by_job() if j["kind"] == "legal_report"]
+    assert len(jobs) == 1
+
+
+def test_run_legal_report_generates_fresh_when_checks_changed(monkeypatch, sample_elements):
+    # 差分キャッシュは判定結果が変わった場合には効かず、通常通りLLMを
+    # 呼び直すことを確認する(land_use_categoryを変えて実測値が変わる
+    # effective_daylighting_ratioの判定に影響させる)。
+    fake_model = _FakeToolCallingModel(
+        responses=[AIMessage(content="1回目"), AIMessage(content="2回目")]
+    )
+    monkeypatch.setattr(agent_report_graph, "ChatAnthropic", lambda model: fake_model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    monkeypatch.setenv("LAND_USE_CATEGORY", "residential")
+    first = asyncio.run(agent_service.run_legal_report())
+    assert first["report"] == "1回目"
+
+    monkeypatch.setenv("LAND_USE_CATEGORY", "commercial")
+    second = asyncio.run(agent_service.run_legal_report())
+
+    assert second["report"] == "2回目"
+    assert second["reused_from_id"] is None
+    assert fake_model.calls == 2
+
+
 def test_summarize_for_prompt_reports_missing_inputs_as_unjudged():
     checks = [
         {
@@ -477,6 +536,28 @@ def test_summarize_for_prompt_reports_missing_inputs_as_unjudged():
     assert "未判定" in summary
     assert "用途地域" in summary
     assert "判定基準" not in summary  # 未判定チェックはPASS/FAIL集計を出さない
+
+
+def test_checks_equal_true_for_identical_checks():
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=1)]
+
+    assert agent_report_graph._checks_equal(checks, checks) is True
+
+
+def test_checks_equal_false_when_previous_is_none():
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=1)]
+
+    assert agent_report_graph._checks_equal(checks, None) is False
+
+
+def test_checks_equal_false_when_status_differs():
+    # (2026-08-14追加、差分キャッシュ)run_checks()はBIMデータ・閾値が
+    # 変わらない限り決定的(実データで2回連続実行しバイト単位で同一の
+    # JSONになることを確認済み)なため、JSON文字列比較で差分判定できる。
+    checks = [_make_check("daylighting_ratio", "採光有効面積比", pass_count=1)]
+    previous = [_make_check("daylighting_ratio", "採光有効面積比", fail_count=1)]
+
+    assert agent_report_graph._checks_equal(checks, previous) is False
 
 
 def test_run_legal_report_without_api_key_raises(monkeypatch):

@@ -212,6 +212,10 @@ def create_tables():
     # REGISTRY参照)、正規化した固定スキーマでは新しいチェック追加のたびに
     # マイグレーションが必要になってしまう)。token_usage・write_audit_logと
     # 同様、履歴を積む(全削除しない、生成のたびに追記する)。
+    # reused_from_id: (2026-08-14追加、差分キャッシュ)このレポートが新規に
+    # LLMで生成されたのではなく、前回保存済みの判定結果(checks)と完全一致
+    # したため、そのレポート文をそのまま再利用したことを示す。再利用時の
+    # 参照元行のid、新規生成時はNULL。save_legal_report()のdocstring参照。
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS legal_report_history
@@ -222,10 +226,23 @@ def create_tables():
 
             report TEXT,
 
-            checks_json TEXT NOT NULL
+            checks_json TEXT NOT NULL,
+
+            reused_from_id INTEGER
         )
         """
     )
+
+    # (2026-08-14追加)legal_report_historyがreused_from_id列の追加より前に
+    # 既に作成されている既存のbim_cache.dbでは、上のCREATE TABLE IF NOT
+    # EXISTSは列追加を反映しない(SQLiteは既存テーブルのスキーマを変更
+    # しない)。列が無ければALTER TABLEで追加する(このプロジェクトで初めて
+    # 必要になった、テーブル作成後のスキーマ移行)。
+    existing_columns = {
+        row["name"] for row in cursor.execute("PRAGMA table_info(legal_report_history)")
+    }
+    if "reused_from_id" not in existing_columns:
+        cursor.execute("ALTER TABLE legal_report_history ADD COLUMN reused_from_id INTEGER")
 
 
     conn.commit()
@@ -857,7 +874,7 @@ def list_audit_log(limit=50):
     return rows
 
 
-def save_legal_report(report, checks):
+def save_legal_report(report, checks, reused_from_id=None):
     """法規レポート生成結果(基準値・参照値・途中結果・判定を含む全内容)を
     1行追加する(agent/service.pyのrun_legal_report()から呼ばれる)。
 
@@ -865,6 +882,10 @@ def save_legal_report(report, checks):
     token_usage・write_audit_logと同じ方針)。checksはevaluate_legal_rule()
     の戻り値のリストをそのままJSON化して保存する。生成したgenerated_atを
     返す(呼び出し側がレスポンスと紐付けて確認できるように)。
+
+    reused_from_id(2026-08-14追加、差分キャッシュ): 今回のchecksが前回
+    保存済みの内容と完全一致し、LLMを呼ばずレポート文を再利用した場合、
+    その参照元行のidを渡す。新規にLLMで生成した場合はNone。
     """
 
     conn = get_connection()
@@ -876,10 +897,10 @@ def save_legal_report(report, checks):
     cursor.execute(
         """
         INSERT INTO legal_report_history
-        (generated_at, report, checks_json)
-        VALUES (?, ?, ?)
+        (generated_at, report, checks_json, reused_from_id)
+        VALUES (?, ?, ?, ?)
         """,
-        (generated_at, report, json.dumps(checks)),
+        (generated_at, report, json.dumps(checks), reused_from_id),
     )
 
     conn.commit()
@@ -901,7 +922,7 @@ def list_legal_report_history(limit=20):
 
     cursor.execute(
         """
-        SELECT id, generated_at, report
+        SELECT id, generated_at, report, reused_from_id
         FROM legal_report_history
         ORDER BY id DESC
         LIMIT ?
@@ -924,8 +945,36 @@ def get_legal_report_history_entry(entry_id):
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT id, generated_at, report, checks_json FROM legal_report_history WHERE id = ?",
+        """
+        SELECT id, generated_at, report, checks_json, reused_from_id
+        FROM legal_report_history WHERE id = ?
+        """,
         (entry_id,),
+    )
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+def get_latest_legal_report():
+    """最後に保存された法規レポート生成結果(checks_json含む全内容)を
+    返す(無ければNone)。
+
+    (2026-08-14追加、差分キャッシュ)agent/service.pyのrun_legal_report()
+    が、今回計算したchecksと前回保存分が完全一致するかを確認するために
+    使う(一致すればLLM呼び出しを省略してレポート文を再利用する、
+    agent/report_graph.pyのモジュールdocstring参照)。
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, generated_at, report, checks_json FROM legal_report_history ORDER BY id DESC LIMIT 1"
     )
 
     row = cursor.fetchone()

@@ -48,8 +48,25 @@ agent/graph.py(build_agent)のReActエージェント——会話ループの中
      返すのではなく、本文に明示的な警告を付記する。抽出できなかった場合は
      「検証不能」として扱い、不一致とはみなさない(過検出よりも見逃しを
      許容する設計)。
+
+  0.5(run_checksの直後、2026-08-14追加、差分キャッシュ): 実測したところ
+     法規レポート生成の所要時間の大半(2〜3分)はgenerate_reportのLLM呼び
+     出しで、run_checks自体は2.4秒程度しかかからない。一方でrun_checksは
+     BIMデータ・環境変数(閾値)が変わらない限り完全に決定的(2回連続実行で
+     バイト単位で同一のJSONになることを確認済み)なため、前回保存した
+     `legal_report_history`のchecksと今回のchecksが完全一致するなら、
+     判定内容は何も変わっていないことになる。この場合generate_report/
+     verify_reportを丸ごとスキップし、前回のレポート文をそのまま返す
+     (`_check_for_reuse`ノード、agent/service.pyが渡すstate["previous_
+     checks"]/state["previous_report"]と比較する)。ユーザーから「差分で
+     再表示のシステムを組み込めば早くならないか」との提案を受けて実装した
+     ——実際のセッションで保存済みのlegal_report_history 7件を検証した
+     ところ、4件が完全に同一のchecksだった(判定に影響しないフロントエンド
+     修正等の合間に生成していたため)。一致しない場合(初回生成・BIM/
+     閾値の変更あり)は従来通りgenerate_report以降を実行する。
 """
 
+import json
 import re
 from typing import TypedDict
 
@@ -92,6 +109,17 @@ class LegalReportState(TypedDict):
     usage: dict
     verification_attempts: int
     verification_mismatches: list[str]
+    # (2026-08-14追加、差分キャッシュ)agent/service.pyがグラフ実行前に
+    # database.db.get_latest_legal_report()から渡す、前回保存分の内容。
+    # 前回のレポートが無い(初回生成)場合はNone。
+    previous_checks: list[dict] | None
+    previous_report: str | None
+    previous_entry_id: int | None
+    # 今回のchecksがprevious_checksと完全一致し、LLM呼び出しをスキップして
+    # レポート文を再利用した場合、その参照元(previous_entry_id)。
+    # 新規生成した場合はNone。agent/service.pyがdb.save_legal_report()の
+    # reused_from_idにそのまま渡す。
+    reused_from_id: int | None
 
 
 # 検証ノード(verify_report)が許容する生成試行回数。初回生成+1回の
@@ -104,6 +132,38 @@ async def _run_checks(state: LegalReportState) -> dict:
     rules = load_legal_rules()
     checks = [await evaluate_legal_rule(rule) for rule in rules]
     return {"checks": checks}
+
+
+def _checks_equal(checks: list[dict], previous_checks: list[dict] | None) -> bool:
+    """2つのchecks(evaluate_legal_rule()の戻り値のリスト)が意味的に完全に
+    一致するかを判定する。BIMデータ・環境変数(閾値)が変わらない限り
+    run_checks()は決定的(2回連続実行で同一のJSONになることを実データで
+    確認済み)なため、JSON文字列としての比較で十分安全に判定できる。
+    """
+    if previous_checks is None:
+        return False
+    return json.dumps(checks, sort_keys=True) == json.dumps(previous_checks, sort_keys=True)
+
+
+def _check_for_reuse(state: LegalReportState) -> dict:
+    """run_checksの直後に、前回保存済みのchecksと完全一致するか確認する。
+
+    一致すればgenerate_report/verify_reportを丸ごとスキップし、前回の
+    レポート文をそのまま再利用する(reused_from_idを設定)。一致しなければ
+    reused_from_id=Noneのまま従来通りgenerate_reportへ進む
+    (モジュールdocstringのステップ0.5参照)。
+    """
+    if _checks_equal(state["checks"], state.get("previous_checks")):
+        return {
+            "report": state.get("previous_report") or "",
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "reused_from_id": state.get("previous_entry_id"),
+        }
+    return {"reused_from_id": None}
+
+
+def _route_after_reuse_check(state: LegalReportState) -> str:
+    return "reused" if state.get("reused_from_id") is not None else "generate"
 
 
 def _summarize_for_prompt(checks: list[dict]) -> str:
@@ -328,12 +388,18 @@ def append_verification_warning(state: LegalReportState) -> dict:
 def build_report_graph(model_name: str = "claude-opus-5"):
     graph = StateGraph(LegalReportState)
     graph.add_node("run_checks", _run_checks)
+    graph.add_node("check_for_reuse", _check_for_reuse)
     graph.add_node("generate_report", _build_generate_report_node(model_name))
     graph.add_node("verify_report", verify_report)
     graph.add_node("append_verification_warning", append_verification_warning)
 
     graph.add_edge(START, "run_checks")
-    graph.add_edge("run_checks", "generate_report")
+    graph.add_edge("run_checks", "check_for_reuse")
+    graph.add_conditional_edges(
+        "check_for_reuse",
+        _route_after_reuse_check,
+        {"reused": END, "generate": "generate_report"},
+    )
     graph.add_edge("generate_report", "verify_report")
     graph.add_conditional_edges(
         "verify_report",

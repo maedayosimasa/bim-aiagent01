@@ -11,6 +11,7 @@ thread_id)単位で保存される。CLAUDE.md「⑨」に挙げられていた�
 (ただし解析結果(engine_analysis_results等)側の履歴化は別課題として残る)。
 """
 
+import json
 import os
 
 import anthropic
@@ -340,21 +341,41 @@ async def run_legal_report() -> dict:
     会話(run_chat)とは別物で、session_id/checkpointerは使わない
     (毎回、登録済み全ルールを対象に最初から実行する単発のパイプライン)。
     詳細はreport_graph.pyのモジュールdocstring参照。
+
+    (2026-08-14追加、差分キャッシュ)前回保存済みのlegal_report_historyを
+    グラフの初期stateに渡し、今回のchecksと完全一致すればLLM呼び出しを
+    スキップして前回のレポート文を再利用する
+    (report_graph.pyの`_check_for_reuse`ノード参照)。
     """
     graph = _get_report_graph()
 
-    result = await _ainvoke_with_context_guard(graph, {"checks": [], "report": ""})
+    previous = db.get_latest_legal_report()
+    initial_state = {"checks": [], "report": ""}
+    if previous is not None:
+        initial_state["previous_checks"] = json.loads(previous["checks_json"])
+        initial_state["previous_report"] = previous["report"]
+        initial_state["previous_entry_id"] = previous["id"]
 
-    _record_token_usage("legal_report", None, result.get("usage") or {})
+    result = await _ainvoke_with_context_guard(graph, initial_state)
+
+    reused_from_id = result.get("reused_from_id")
+    if reused_from_id is None:
+        # LLMを実際に呼んだ場合のみトークン使用量を記録する
+        # (再利用時はusageが{"input_tokens": 0, "output_tokens": 0}に
+        # なっており、記録しても意味の無い0件の行が増えるだけのため)。
+        _record_token_usage("legal_report", None, result.get("usage") or {})
 
     # (2026-08-14追加)基準値(threshold)・参照値/途中結果(items[].evidence)・
     # 判定(items[].status)を含む全内容をdatabase.db.legal_report_history
     # へ保存する(履歴を積む、db.save_legal_report()のdocstring参照)。
     # 以前はレスポンスとして返すだけでデータベースには一切残らなかった。
-    generated_at = db.save_legal_report(result["report"], result["checks"])
+    generated_at = db.save_legal_report(
+        result["report"], result["checks"], reused_from_id=reused_from_id
+    )
 
     return {
         "checks": result["checks"],
         "report": result["report"],
         "generated_at": generated_at,
+        "reused_from_id": reused_from_id,
     }

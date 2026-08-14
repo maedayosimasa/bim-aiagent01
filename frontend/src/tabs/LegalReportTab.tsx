@@ -317,6 +317,14 @@ function LegalReportTab() {
 
       {reportMutation.data && (
         <>
+          {reportMutation.data.reused_from_id !== null && (
+            <p className="hint">
+              前回の判定結果(基準値・実測値・判定)から変化が無かったため、
+              LLMを呼び出さず前回のレポートをそのまま表示しています
+              (差分キャッシュ、数秒で完了)。
+            </p>
+          )}
+
           <h3>サマリー</h3>
           <div className="agent-message agent-message-ai legal-report-summary markdown-body">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
