@@ -15,6 +15,18 @@ def test_status_for_uses_comparator():
     assert rule_engine._status_for(None, comparator, 0.8) is rule_engine.RuleCheckStatus.UNKNOWN
 
 
+def test_status_for_not_applicable_overrides_measured_value():
+    # (2026-08-14追加)evidence["not_applicable"]がTrueの場合、measured_value
+    # の有無に関わらずNOT_APPLICABLEを返す(北側斜線制限が商業地域等では
+    # そもそも適用されないケースをUNKNOWNと区別するため導入)。
+    comparator = rule_engine.RuleComparator.LTE
+
+    assert (
+        rule_engine._status_for(None, comparator, 0.0, not_applicable=True)
+        is rule_engine.RuleCheckStatus.NOT_APPLICABLE
+    )
+
+
 def test_load_legal_rules_returns_known_rules():
     rules = {r.rule_id: r for r in rule_engine.load_legal_rules()}
 
@@ -205,6 +217,30 @@ def test_evaluate_legal_rule_floor_index_none_when_missing(test_db, monkeypatch)
     result = asyncio.run(rule_engine.run_daylighting_check())
 
     assert result["items"][0]["floor_index"] is None
+
+
+def test_evaluate_north_slant_compliance_via_rule_id_not_applicable_for_commercial_zoning(
+    test_db, monkeypatch
+):
+    # (2026-08-14追加、実データで発覚した不具合の再現)近隣商業地域の敷地では
+    # 北側斜線制限がそもそも適用されない。以前はこの結果がstatus="unknown"
+    # になっており、ユーザーから「なぜ計算できないのか、方位が取得できて
+    # いないのか」と誤解される指摘があった。用途地域から自動導出された
+    # kitagawa_shasen_kubunがnot_applicableになる経路がstatus=
+    # "not_applicable"を返すことを、rule_id経由のフルパイプラインで確認する。
+    monkeypatch.setenv("LAND_USE_CATEGORY", "近隣商業地域")
+    monkeypatch.setenv("NORTH_DEGREES", "0")
+
+    test_db.insert_element(
+        "site1", "Zone", "敷地",
+        json.dumps({}),
+        json.dumps({"type": "polygon", "points": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}),
+    )
+
+    result = asyncio.run(rule_engine.evaluate_legal_rule_by_id("north_slant_compliance"))
+
+    assert result["items"][0]["status"] == "not_applicable"
+    assert result["items"][0]["evidence"]["not_applicable"] is True
 
 
 def test_evaluate_legal_rule_by_id_raises_for_unknown_rule():

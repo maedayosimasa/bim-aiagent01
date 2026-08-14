@@ -140,7 +140,14 @@ const EVIDENCE_FIELD_FORMATS: Record<string, EvidenceFieldFormat> = {
 
 // GUIDは人間には読めないため内訳表示からは除外する(target_nameや
 // worst_element_nameで代わりに要素名を示している)。
-const EVIDENCE_HIDDEN_KEYS = new Set(["worst_element_guid", "nearest_exit_door_guid"]);
+// (2026-08-14追加)not_applicableは判定列(status="not_applicable"→「対象外」)
+// が既に伝えており、evidence.reasonが理由の説明も別途持つため、内訳列では
+// 冗長になるだけの真偽値フラグとして除外する。
+const EVIDENCE_HIDDEN_KEYS = new Set([
+  "worst_element_guid",
+  "nearest_exit_door_guid",
+  "not_applicable",
+]);
 
 function formatEvidenceEntry(key: string, value: unknown): string | null {
   if (value === null || value === undefined) return null;

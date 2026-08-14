@@ -143,13 +143,38 @@ def test_calculate_north_slant_compliance_fails_when_exceeding_limit(test_db):
     assert result[0]["measured_value"] > 0
 
 
-def test_calculate_north_slant_compliance_unknown_when_not_applicable(test_db):
+def test_calculate_north_slant_compliance_not_applicable_flag_when_zoning_excluded(test_db):
+    # (2026-08-14修正)以前はkitagawa_shasen_kubunが"not_applicable"に
+    # 解決された場合も、真に未設定(None)の場合も同じUNKNOWN扱いだった。
+    # ユーザーから「なぜ計算できないのか、方位が取得できていないのか」と
+    # 誤解される指摘を受け、「この敷地には北側斜線制限がそもそも適用され
+    # ない」ことを示すevidence["not_applicable"]フラグを追加した
+    # (rule_engine.evaluate_legal_rule()がこれを見てstatus="not_applicable"
+    # を割り当てる)。
     _insert_site(test_db)
     _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=10000)
 
     result = calculate_north_slant_compliance(north_degrees=0, kitagawa_shasen_kubun="not_applicable")
 
     assert result[0]["measured_value"] is None
+    assert result[0]["evidence"]["not_applicable"] is True
+
+
+def test_calculate_north_slant_compliance_unknown_without_not_applicable_flag_when_kubun_unset(
+    test_db, monkeypatch
+):
+    # kubunが真に未設定(明示指定も無く、land_use_categoryからも導出できない)
+    # 場合は、値を追加で与えれば結果が変わりうる「情報不足」であり
+    # not_applicableフラグは立てない(UNKNOWNのまま)。
+    monkeypatch.delenv("LAND_USE_CATEGORY", raising=False)
+    monkeypatch.delenv("KITAGAWA_SHASEN_KUBUN", raising=False)
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=10000)
+
+    result = calculate_north_slant_compliance(north_degrees=0)
+
+    assert result[0]["measured_value"] is None
+    assert "not_applicable" not in result[0]["evidence"]
 
 
 def test_calculate_north_slant_compliance_unknown_when_north_degrees_missing(test_db, monkeypatch):

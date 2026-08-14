@@ -196,9 +196,13 @@ def calculate_height_district_compliance(
     他のengine/*.pyと同じ「SQLiteキャッシュのみを読む、Archicad非依存」と
     いうアーキテクチャ境界を守る必要があるため。
 
-    区分が未設定・対象外、必要な数値(絶対高さ・立ち上がり・勾配・真北方向)
-    が揃わない、または敷地内に高さ情報を持つ建物要素が無い場合、
-    measured_value=None(UNKNOWN)を返す。
+    区分が未設定、必要な数値(絶対高さ・立ち上がり・勾配・真北方向)が
+    揃わない、または敷地内に高さ情報を持つ建物要素が無い場合、
+    measured_value=None(UNKNOWN)を返す。kodo_chiku_kubunが明示的に
+    "none"(指定なし)に設定されている場合は、情報不足のUNKNOWNとは区別し
+    NOT_APPLICABLEを返す(evidenceに"not_applicable": Trueを付与、
+    2026-08-14追加——north_slant_envelope.calculate_north_slant_compliance()
+    と同じ考え方、ユーザーからの北側斜線制限に関する指摘を機に統一した)。
     """
     kubun = kubun or resolve_legal_input("kodo_chiku_kubun")
     kanwa = _resolve_float_input("kodo_chiku_kanwa_m", kanwa_m) or 0.0
@@ -207,19 +211,29 @@ def calculate_height_district_compliance(
     site_zones = get_site_boundary()
     all_points = building_height_points()
 
-    def _unresolved(reason: str):
+    def _unresolved(reason: str, *, not_applicable: bool = False):
+        evidence = {"reason": reason}
+        if not_applicable:
+            evidence["not_applicable"] = True
         return [
             {
                 "target_guid": site["guid"],
                 "target_name": site["name"],
                 "measured_value": None,
-                "evidence": {"reason": reason},
+                "evidence": evidence,
             }
             for site in site_zones
         ]
 
+    if kubun == "none":
+        return _unresolved(
+            "この敷地は高度地区の指定なし(kodo_chiku_kubun=none)のため、"
+            "高度地区(都市計画法8条1項3号)による高さ制限は適用されません。",
+            not_applicable=True,
+        )
+
     if kubun not in ("flat", "north_slant"):
-        return _unresolved("高度地区の指定区分(kodo_chiku_kubun)が未設定、または対象外です。")
+        return _unresolved("高度地区の指定区分(kodo_chiku_kubun)が未設定です。")
 
     if kubun == "flat":
         if max_height is None:

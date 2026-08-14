@@ -206,12 +206,38 @@ def calculate_north_slant_compliance(
     合否判定は他のengine/*.pyと同じ「SQLiteキャッシュのみを読む、Archicad
     非依存」というアーキテクチャ境界を守る必要があるため。
 
-    適用区分が対象外・未設定、north_degreesが未設定、または敷地内に高さ
-    情報を持つ建物要素が無い場合、measured_value=None(UNKNOWN)を返す
-    (missing_inputsではなく、判定は実行された上で値が無い状態として扱う)。
+    適用区分が未設定、north_degreesが未設定、または敷地内に高さ情報を持つ
+    建物要素が無い場合、measured_value=None(UNKNOWN)を返す(missing_inputs
+    ではなく、判定は実行された上で値が無い状態として扱う)。適用区分が
+    解決できたが対象区域外(用途地域が商業系・工業系等)と判明した場合は、
+    情報不足のUNKNOWNとは区別してNOT_APPLICABLEを返す(evidenceに
+    "not_applicable": Trueを付与し、rule_engine.evaluate_legal_rule()の
+    `_status_for()`がこれを見てstatus="not_applicable"を割り当てる。
+    2026-08-14追加——以前はどちらも同じUNKNOWNになっており、ユーザーから
+    「なぜ計算できないのか、方位が取得できていないのか」と誤解される
+    不具合があった。この2つは値を追加で与えれば結果が変わりうるか否かが
+    根本的に異なる)。
     """
     kubun = kitagawa_shasen_kubun or get_kitagawa_shasen_kubun()
     site_zones = get_site_boundary()
+
+    if kubun is None:
+        return [
+            {
+                "target_guid": site["guid"],
+                "target_name": site["name"],
+                "measured_value": None,
+                "evidence": {
+                    "reason": (
+                        "適用区分(kitagawa_shasen_kubun)が未設定のため判定できません。"
+                        "kitagawa_shasen_kubunを直接指定するか、land_use_categoryに"
+                        "正式な用途地域名(例:「第一種低層住居専用地域」)を設定して"
+                        "ください。"
+                    ),
+                },
+            }
+            for site in site_zones
+        ]
 
     if kubun not in _RISE_HEIGHTS_M:
         return [
@@ -220,7 +246,14 @@ def calculate_north_slant_compliance(
                 "target_name": site["name"],
                 "measured_value": None,
                 "evidence": {
-                    "reason": "適用区分(kitagawa_shasen_kubun)が未設定、または対象区域外です。",
+                    "not_applicable": True,
+                    "kitagawa_shasen_kubun": kubun,
+                    "reason": (
+                        "この敷地の用途地域は北側斜線制限の対象区域"
+                        "(第一種/第二種低層住居専用地域・田園住居地域・"
+                        "第一種/第二種中高層住居専用地域)に該当しないため、"
+                        "北側斜線制限(建築基準法56条1項3号)は適用されません。"
+                    ),
                 },
             }
             for site in site_zones

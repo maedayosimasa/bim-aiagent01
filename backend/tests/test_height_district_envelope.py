@@ -208,13 +208,29 @@ def test_compliance_north_slant_kubun_unknown_when_north_degrees_missing(test_db
     assert result[0]["measured_value"] is None
 
 
-def test_compliance_unknown_when_kubun_not_applicable(test_db):
+def test_compliance_not_applicable_flag_when_kubun_explicitly_none(test_db):
+    # (2026-08-14修正)north_slant_envelope.calculate_north_slant_compliance()
+    # と同じ考え方: kodo_chiku_kubun="none"(指定なし、明示的な値)は
+    # 「そもそも高度地区が適用されない」ことを意味し、真に未設定(情報不足)
+    # とは区別してevidence["not_applicable"]フラグを立てる。
     _insert_site(test_db)
     _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=5000)
 
     result = calculate_height_district_compliance(kubun="none")
 
     assert result[0]["measured_value"] is None
+    assert result[0]["evidence"]["not_applicable"] is True
+
+
+def test_compliance_unknown_without_not_applicable_flag_when_kubun_unset(test_db, monkeypatch):
+    monkeypatch.delenv("KODO_CHIKU_KUBUN", raising=False)
+    _insert_site(test_db)
+    _insert_wall(test_db, "wall1", [[4900, 5000], [5100, 5000]], z_max=5000)
+
+    result = calculate_height_district_compliance()
+
+    assert result[0]["measured_value"] is None
+    assert "not_applicable" not in result[0]["evidence"]
 
 
 def test_compliance_unknown_when_no_building_elements(test_db):

@@ -97,7 +97,15 @@ class RuleCheckStatus(str, Enum):
     PASS = "pass"
     FAIL = "fail"
     UNKNOWN = "unknown"  # 判定に必要な実測値が欠けている(例: 幅が取得できないドア)
-    NOT_APPLICABLE = "not_applicable"  # このBIMモデルに対象要素が存在しない
+    NOT_APPLICABLE = "not_applicable"
+    """このBIMモデルに対象要素が存在しない、または敷地の用途地域等から
+    そもそもこのプロジェクトには適用されないと判明している(例: 北側斜線
+    制限は商業地域には適用されない)。「情報が足りず判定できない」UNKNOWN
+    とは異なり、値を追加で与えても判定結果は変わらない
+    (2026-08-14追加、measurements["evidence"]["not_applicable"]=Trueを
+    _status_for()が見て割り当てる。北側斜線制限が「不明(UNKNOWN)」と表示
+    され「方位が取得できていないのか」とユーザーに誤解された実データでの
+    指摘を受けて導入)。"""
 
 
 class RuleComparator(str, Enum):
@@ -241,7 +249,15 @@ def get_legal_rule(rule_id: str) -> LegalRule | None:
     return next((rule for rule in load_legal_rules() if rule.rule_id == rule_id), None)
 
 
-def _status_for(measured_value: float | None, comparator: RuleComparator, threshold: float) -> RuleCheckStatus:
+def _status_for(
+    measured_value: float | None,
+    comparator: RuleComparator,
+    threshold: float,
+    *,
+    not_applicable: bool = False,
+) -> RuleCheckStatus:
+    if not_applicable:
+        return RuleCheckStatus.NOT_APPLICABLE
     if measured_value is None:
         return RuleCheckStatus.UNKNOWN
     comparator_fn = _COMPARATOR_FNS[comparator]
@@ -372,7 +388,10 @@ async def evaluate_legal_rule(rule: LegalRule) -> dict:
                 "target_guid": m["target_guid"],
                 "target_name": m.get("target_name"),
                 "floor_index": floor_index_by_guid.get(m["target_guid"]),
-                "status": _status_for(m["measured_value"], rule.verification.comparator, threshold).value,
+                "status": _status_for(
+                    m["measured_value"], rule.verification.comparator, threshold,
+                    not_applicable=bool(m.get("evidence", {}).get("not_applicable")),
+                ).value,
                 "measured_value": m["measured_value"],
                 "unit": rule.verification.unit,
                 "evidence": m.get("evidence", {}),
