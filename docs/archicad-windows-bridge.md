@@ -9,18 +9,33 @@ Tailscale経由でAWS上のbackendから接続できるようにする手順。
 ## クイックセットアップ(複数PCへの配布用、2026-09-05追加)
 
 新しいPCでこのブリッジを使う人には、以下の手順(1〜4)を1つずつ説明する代わりに、
-[`setup_archicad_bridge.ps1`](./setup_archicad_bridge.ps1)を配布して1回実行してもらうだけでよい。
+[`setup_archicad_bridge.ps1`](./setup_archicad_bridge.ps1)と
+[`setup_archicad_bridge.bat`](./setup_archicad_bridge.bat)の**2ファイルを同じフォルダに入れて**配布し、
+`.bat`をダブルクリックしてもらうだけでよい(PowerShellを自分で開く必要がない、
+`.bat`が管理者権限への昇格(UACの確認ダイアログ)・認証キーの入力プロンプト・
+`.ps1`の呼び出しをすべて代行する)。
+
+**重要な制約(IPアドレスについて)**: Tailscaleは参加した端末ごとに必ず異なるIP
+アドレス(`100.x.x.x`)を割り当てる。そのため「ダッシュボードの『リモート(env既定)』
+に表示される値(例: `http://100.92.212.100:8765/mcp/`)」は**特定の1台のPCに固有の値**であり、
+別のPCをこれと同じアドレスに固定することはできない(同一ネットワーク上で2台が
+同じIPを名乗ることはOS/ネットワークの仕組み上不可能なため)。固定・統一できるのは
+**ポート番号(既定8765)とURLの形式**までで、IPアドレス自体は配布先PCごとに
+異なる値になる。そのため、配布先PCの接続先URLは毎回ダッシュボードの
+「カスタムURL」欄に貼り付けて手動で切り替える運用になる(スクリプト実行後に
+表示される、そのPC固有のURLをコピーするだけでよい)。
 
 1. (管理者側)Tailscale管理コンソール(https://login.tailscale.com/admin/settings/keys)で
    再利用可能(Reusable)な認証キーを発行し、配布する人に渡す(社内で使い回してよい)。
 2. (配布先PC)archicad-mcp・Archicad・Tapir Add-On・uvがセットアップ済みであることを確認した上で、
-   管理者権限のPowerShellで以下を実行する:
-   ```powershell
-   .\setup_archicad_bridge.ps1 -TailscaleAuthKey "tskey-auth-xxxxxxxx"
-   ```
-3. スクリプトの最後に表示される`http://<Tailscale IP>:8765/mcp/`を、
+   `setup_archicad_bridge.bat`をダブルクリックする。UACの確認が出たら「はい」を押し、
+   表示されたプロンプトに認証キーを貼り付ける。
+3. スクリプトの最後に表示される`http://<そのPC固有のTailscale IP>:8765/mcp/`を、
    https://bim-aiagent.com/ のダッシュボード→Archicad接続→「カスタムURL」に貼り付けて
    「この接続に切り替える」を押す。
+
+(PowerShellを直接使いたい場合は、`.bat`を経由せず`.ps1`を管理者権限のPowerShellから
+直接実行してもよい: `.\setup_archicad_bridge.ps1 -TailscaleAuthKey "tskey-auth-xxxxxxxx"`)
 
 以下の1〜4は、上記スクリプトが内部で自動実行している内容の詳細(トラブルシュート時の参照用)。
 
