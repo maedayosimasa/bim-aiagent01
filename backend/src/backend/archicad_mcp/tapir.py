@@ -73,7 +73,7 @@ import math
 from . import client as archicad_client
 
 
-async def _call(name, arguments=None, transport=None):
+async def _call(name, arguments=None, transport=None, session=None):
     # archicad-mcp wraps every dynamically-registered Tapir command behind
     # a single "input" parameter (see its register_tapir.py:
     # `def dynamic_command(input, ...)`), so the real Tapir arguments must
@@ -81,7 +81,7 @@ async def _call(name, arguments=None, transport=None):
     # tool's top-level arguments - confirmed against a real "'input' is a
     # required property" error from the live server.
     result = await archicad_client.call_tool(
-        name, {"input": arguments}, transport=transport
+        name, {"input": arguments}, transport=transport, session=session
     )
 
     if result.is_error:
@@ -104,8 +104,8 @@ def _element_ids(guids):
     return [{"elementId": {"guid": guid}} for guid in guids]
 
 
-async def get_all_element_guids(transport=None):
-    payload = await _call("GetAllElements", transport=transport)
+async def get_all_element_guids(transport=None, session=None):
+    payload = await _call("GetAllElements", transport=transport, session=session)
     return [item["elementId"]["guid"] for item in payload.get("elements", [])]
 
 
@@ -116,16 +116,22 @@ async def get_element_guids_by_type(element_type, transport=None):
     return [item["elementId"]["guid"] for item in payload.get("elements", [])]
 
 
-async def get_details_of_elements(guids, transport=None):
+async def get_details_of_elements(guids, transport=None, session=None):
     payload = await _call(
-        "GetDetailsOfElements", {"elements": _element_ids(guids)}, transport=transport
+        "GetDetailsOfElements",
+        {"elements": _element_ids(guids)},
+        transport=transport,
+        session=session,
     )
     return payload.get("detailsOfElements", [])
 
 
-async def get_bounding_boxes(guids, transport=None):
+async def get_bounding_boxes(guids, transport=None, session=None):
     payload = await _call(
-        "Get3DBoundingBoxes", {"elements": _element_ids(guids)}, transport=transport
+        "Get3DBoundingBoxes",
+        {"elements": _element_ids(guids)},
+        transport=transport,
+        session=session,
     )
     return payload.get("boundingBoxes3D", [])
 
@@ -277,7 +283,7 @@ async def get_geo_location(transport=None):
     }
 
 
-async def get_zone_categories(transport=None):
+async def get_zone_categories(transport=None, session=None):
     """ゾーンカテゴリ属性(住宅/共用/バルコニー等)の一覧を取得する。
 
     Zoneのdetails.categoryAttributeId.guidが指す先の実名(例:"住宅-1")は
@@ -292,12 +298,15 @@ async def get_zone_categories(transport=None):
     テンプレートに依存しない幾何包含(graph/envelope.py)を根拠にする。
     """
     payload = await _call(
-        "GetAttributesByType", {"attributeType": "ZoneCategory"}, transport=transport
+        "GetAttributesByType",
+        {"attributeType": "ZoneCategory"},
+        transport=transport,
+        session=session,
     )
     return payload.get("attributes", [])
 
 
-async def get_layer_names(transport=None):
+async def get_layer_names(transport=None, session=None):
     """レイヤー属性(名前・番号)の一覧を取得する。
 
     GetDetailsOfElementsが返すproperties.layerIndexは番号のみで、レイヤー
@@ -311,7 +320,10 @@ async def get_layer_names(transport=None):
     参考レイヤーを区別して表示できるようにする。
     """
     payload = await _call(
-        "GetAttributesByType", {"attributeType": "Layer"}, transport=transport
+        "GetAttributesByType",
+        {"attributeType": "Layer"},
+        transport=transport,
+        session=session,
     )
     return payload.get("attributes", [])
 

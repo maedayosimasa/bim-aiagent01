@@ -597,7 +597,7 @@ def test_call_returns_structured_content_when_present(monkeypatch):
         structured_content = {"elements": ["fake"]}
         content = []
 
-    async def fake_call_tool(name, arguments, transport=None):
+    async def fake_call_tool(name, arguments, transport=None, session=None):
         return _FakeResult()
 
     monkeypatch.setattr(archicad_client, "call_tool", fake_call_tool)

@@ -240,25 +240,43 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     model_idを推測する妥当な根拠が無く、他のengine計算はこのスナップ
     ショットに依存しない(呼び出しのたびに独立して再計算する)ため。
     """
-    all_guids = await tapir.get_all_element_guids()
-    guids = all_guids if limit <= 0 else all_guids[:limit]
+    # (2026-09-05追加、実機で発覚した性能問題への対応)以前はここから続く
+    # 5回のTapir呼び出し(GetAllElements/GetDetailsOfElements/
+    # Get3DBoundingBoxes/GetAttributesByType×2)それぞれが個別に
+    # archicad_client.call_tool()を呼んでおり、呼び出しのたびにMCP
+    # セッションを新規に開いて(initializeハンドシェイク+SSEストリーム
+    # 確立)閉じて(セッション破棄)いた。ローカル直結では気にならない
+    # オーバーヘッドだが、EC2でTailscale経由(特にDERPリレー)運用した
+    # ところ実データ(5706要素)で同期に約80秒かかり、backendのログを
+    # 確認したところ大半が実データ転送ではなくセッション確立・破棄の
+    # 往復(307リダイレクト・SSE再接続の"reconnecting in 1000ms"含む)
+    # だった。1つのセッションを使い回すことでこのオーバーヘッドを
+    # 5回分から1回分に減らし、さらに互いに依存しない4呼び出しは
+    # asyncio.gather()で並列実行する(MCPはJSON-RPCベースでリクエストID
+    # により応答を紐付けるため、1セッション上での複数リクエストの
+    # 同時実行は仕様上安全)。
+    async with archicad_client.open_session() as session:
+        all_guids = await tapir.get_all_element_guids(session=session)
+        guids = all_guids if limit <= 0 else all_guids[:limit]
 
-    if not guids:
-        return {
-            "synced": 0,
-            "requested": 0,
-            "legal_conditions_synced": {},
-            "diff": {"added": 0, "changed": 0, "removed": 0, "unchanged": 0},
-            "relations_rebuilt": False,
-            "relations_count": None,
-            "index_updated_count": 0,
-            "index_removed_count": 0,
-        }
+        if not guids:
+            return {
+                "synced": 0,
+                "requested": 0,
+                "legal_conditions_synced": {},
+                "diff": {"added": 0, "changed": 0, "removed": 0, "unchanged": 0},
+                "relations_rebuilt": False,
+                "relations_count": None,
+                "index_updated_count": 0,
+                "index_removed_count": 0,
+            }
 
-    details_list = await tapir.get_details_of_elements(guids)
-    bounding_boxes = await tapir.get_bounding_boxes(guids)
-    zone_categories = await tapir.get_zone_categories()
-    layers = await tapir.get_layer_names()
+        details_list, bounding_boxes, zone_categories, layers = await asyncio.gather(
+            tapir.get_details_of_elements(guids, session=session),
+            tapir.get_bounding_boxes(guids, session=session),
+            tapir.get_zone_categories(session=session),
+            tapir.get_layer_names(session=session),
+        )
 
     category_name_by_guid = {
         category["attributeId"]["guid"]: category["name"] for category in zone_categories

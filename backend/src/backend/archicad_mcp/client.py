@@ -84,7 +84,25 @@ async def _session(transport=None):
             yield session
 
 
-async def list_tools(transport=None):
+def open_session(transport=None):
+    """Public entry point to `_session()`, for callers that need to run
+
+    several tool calls back-to-back without paying per-call MCP session
+    setup/teardown overhead (initialize handshake, SSE stream, session
+    close). Each call_tool()/list_tools() call normally opens and closes
+    its own session, which is fine in isolation but adds up badly over a
+    slow/relayed link (Tailscale DERP) when a caller needs many calls in
+    a row - see archicad_mcp/server.py's sync_from_archicad(), which was
+    measured taking ~80s over a relayed connection for ~5700 elements
+    almost entirely in repeated session negotiation, not actual data
+    transfer. Use as `async with archicad_client.open_session() as
+    session:` then pass `session=session` into call_tool()/tapir.py's
+    helpers to reuse it.
+    """
+    return _session(transport)
+
+
+async def list_tools(transport=None, session=None):
     """List the tool names exposed by the connected Archicad MCP server.
 
     Use this once the PC bridge is live to discover the real tool
@@ -92,17 +110,28 @@ async def list_tools(transport=None):
     "get elements" / "move element" tools).
     """
 
+    if session is not None:
+        result = await session.list_tools()
+        return [tool.name for tool in result.tools]
+
     async with _session(transport) as session:
         result = await session.list_tools()
         return [tool.name for tool in result.tools]
 
 
-async def call_tool(name, arguments=None, transport=None):
+async def call_tool(name, arguments=None, transport=None, session=None):
     """Call a tool on the connected Archicad MCP server by name.
 
     Generic passthrough - the caller is responsible for knowing the
     tool's argument shape (discoverable via list_tools()).
+
+    Pass an already-open `session` (from `open_session()`) to run this
+    call on it instead of opening a new one - see `open_session()`
+    docstring. `transport` is ignored when `session` is given.
     """
+
+    if session is not None:
+        return await session.call_tool(name, arguments or {})
 
     async with _session(transport) as session:
         return await session.call_tool(name, arguments or {})
