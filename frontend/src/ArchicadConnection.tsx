@@ -53,30 +53,28 @@ function ArchicadConnection() {
   };
 
   useEffect(() => {
+    // (2026-09-05修正)以前はここで「overridden:falseなら未設定とみなし、
+    // WSLブリッジ→ローカルの順に自動で強制切り替えする」処理を行っていた。
+    // このコンポーネントはタブを切り替えるたびに再マウントされるため、
+    // 本番(EC2、ARCHICAD_MCP_URL=Tailscale経由のリモートURLをenv既定として
+    // 使う運用。overridden自体はfalseのまま)でダッシュボードを開き直す
+    // たびにこの自動フォールバックが発動し、正常に繋がっていたリモート
+    // 接続を無条件でローカル(127.0.0.1)へ書き換えて切断してしまう不具合が
+    // 実機で発生した。overriddenかどうかに関わらず、マウント時は現在の
+    // 接続状態を読み取ってラジオボタンの表示を合わせるだけにし、接続先の
+    // 変更は「この接続に切り替える」ボタンを明示的に押した時のみ行う。
     getArchicadConnection()
       .then((fetchedInfo) => {
-        // まだ何も明示的に選択されていなければ、まずWSLブリッジ接続を試し、
-        // 繋がればそれを既定にする。繋がらなければローカルにフォールバックする。
-        // (このデフォルトはbackend再起動ごとにリセットされるランタイム
-        // オーバーライドなので、フロント側で起動時に一度合わせる。)
-        if (!fetchedInfo.overridden) {
-          setMode("wsl");
-          applyConnection(WSL_BRIDGE_URL).then((appliedStatus) => {
-            if (!appliedStatus?.reachable) {
-              setMode("local");
-              applyConnection("local");
-            }
-          });
-          return;
-        }
-
         setInfo(fetchedInfo);
 
         if (fetchedInfo.active_url === WSL_BRIDGE_URL) {
           setMode("wsl");
         } else if (fetchedInfo.active_url === fetchedInfo.local_preset_url) {
           setMode("local");
-        } else if (fetchedInfo.active_url === fetchedInfo.env_default) {
+        } else if (
+          fetchedInfo.env_default &&
+          fetchedInfo.active_url === fetchedInfo.env_default
+        ) {
           setMode("remote");
         } else if (fetchedInfo.active_url) {
           setMode("custom");
@@ -86,7 +84,6 @@ function ArchicadConnection() {
         fetchStatus();
       })
       .catch(() => setInfo(null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
