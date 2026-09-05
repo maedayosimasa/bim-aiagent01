@@ -15,6 +15,11 @@ services:
       # 未設定時はローカル開発既定値(http://localhost:8000)にフォールバックする。
       # EC2等、localhost以外のホストからフロントエンドを配信する場合は必須。
       - VITE_API_BASE_URL=${VITE_API_BASE_URL:-}
+      # Viteのdevサーバーが受け付けるHostヘッダのホワイトリスト(カンマ区切り、
+      # vite.config.ts参照)。未設定ならlocalhost系のみ許可(既定挙動のまま)。
+      # EC2をリバースプロキシ経由で実ドメインで公開する場合は必須
+      # (例: bim-aiagent.com,www.bim-aiagent.com)。
+      - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-}
     depends_on:
       - backend
 
