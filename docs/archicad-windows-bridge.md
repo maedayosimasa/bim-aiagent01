@@ -6,6 +6,24 @@ Tailscale経由でAWS上のbackendから接続できるようにする手順。
 前提: Archicad 28 + Tapir Add-Onは導入済み、`uv run python -c "from archicad import ACConnection; c = ACConnection.connect(); print(c.version, c.build)"`
 がPowerShellから成功することを確認済み(`28 3001`のような出力)。
 
+## クイックセットアップ(複数PCへの配布用、2026-09-05追加)
+
+新しいPCでこのブリッジを使う人には、以下の手順(1〜4)を1つずつ説明する代わりに、
+[`setup_archicad_bridge.ps1`](./setup_archicad_bridge.ps1)を配布して1回実行してもらうだけでよい。
+
+1. (管理者側)Tailscale管理コンソール(https://login.tailscale.com/admin/settings/keys)で
+   再利用可能(Reusable)な認証キーを発行し、配布する人に渡す(社内で使い回してよい)。
+2. (配布先PC)archicad-mcp・Archicad・Tapir Add-On・uvがセットアップ済みであることを確認した上で、
+   管理者権限のPowerShellで以下を実行する:
+   ```powershell
+   .\setup_archicad_bridge.ps1 -TailscaleAuthKey "tskey-auth-xxxxxxxx"
+   ```
+3. スクリプトの最後に表示される`http://<Tailscale IP>:8765/mcp/`を、
+   https://bim-aiagent.com/ のダッシュボード→Archicad接続→「カスタムURL」に貼り付けて
+   「この接続に切り替える」を押す。
+
+以下の1〜4は、上記スクリプトが内部で自動実行している内容の詳細(トラブルシュート時の参照用)。
+
 ## 1. HTTP起動用スクリプトを追加する
 
 既存の`server.py`(Claude Desktopのstdio設定が参照している)は**変更しない**。
