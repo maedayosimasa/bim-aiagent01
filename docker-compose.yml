@@ -35,6 +35,16 @@ services:
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_STATE_DIR=/var/lib/tailscale
+      # 公式イメージは既定でuserspace-networking(tailscaledのプロセス内蔵ネット
+      # スタックのみ、tailscale0インターフェースをカーネルに作らない)で起動する。
+      # このモードではtailscaled自身の通信(tailscale ping等)はできても、
+      # network_mode: service:tailscaleで同居するbackendコンテナの通常のTCP接続
+      # (ARCHICAD_MCP_URL宛のsocket.connect()等)はカーネルのルーティングテーブルに
+      # 100.64.0.0/10宛の経路が無いため到達不能になる(2026-09-05に実機で確認、
+      # tailscale pingは通るのに実際のHTTP接続はtimeoutするという形で顕在化した)。
+      # /dev/net/tunとNET_ADMIN/NET_RAW(下記)は揃っているため、falseにして
+      # カーネルのtailscale0デバイスを使うモードへ切り替える。
+      - TS_USERSPACE=false
     volumes:
       - tailscale_state:/var/lib/tailscale
       - /dev/net/tun:/dev/net/tun
