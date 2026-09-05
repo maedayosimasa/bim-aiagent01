@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 from mcp.server.mcpserver import MCPServer
 
@@ -245,16 +246,32 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     # Get3DBoundingBoxes/GetAttributesByType×2)それぞれが個別に
     # archicad_client.call_tool()を呼んでおり、呼び出しのたびにMCP
     # セッションを新規に開いて(initializeハンドシェイク+SSEストリーム
-    # 確立)閉じて(セッション破棄)いた。ローカル直結では気にならない
-    # オーバーヘッドだが、EC2でTailscale経由(特にDERPリレー)運用した
-    # ところ実データ(5706要素)で同期に約80秒かかり、backendのログを
-    # 確認したところ大半が実データ転送ではなくセッション確立・破棄の
-    # 往復(307リダイレクト・SSE再接続の"reconnecting in 1000ms"含む)
-    # だった。1つのセッションを使い回すことでこのオーバーヘッドを
-    # 5回分から1回分に減らし、さらに互いに依存しない4呼び出しは
-    # asyncio.gather()で並列実行する(MCPはJSON-RPCベースでリクエストID
-    # により応答を紐付けるため、1セッション上での複数リクエストの
-    # 同時実行は仕様上安全)。
+    # 確立)閉じて(セッション破棄)いた。1つのセッションを使い回すことで
+    # このオーバーヘッドを5回分から1回分に減らし、さらに互いに依存しない
+    # 4呼び出しはasyncio.gather()で並列実行する(MCPはJSON-RPCベースで
+    # リクエストIDにより応答を紐付けるため、1セッション上での複数
+    # リクエストの同時実行は仕様上安全)。
+    #
+    # (同日、詳細な計測の結果判明した追加の事実)当初はセッション確立・
+    # 破棄の往復が所要時間の大半を占めていると推測していたが、
+    # time.monotonic()でsync_from_archicad()内の各区間を実測したところ
+    # (EC2・Tailscale DERPリレー経由、実データ5706要素)、db.get_elements()
+    # ・このモジュールレベルのPythonループ・db.replace_all_elements()は
+    # 合計0.3秒程度に過ぎず、支配的なのは実データ転送そのもの(下記
+    # print、Tapir取得だけで70〜90秒程度、敷地プロパティ取得も20秒前後)
+    # だと判明した。GetDetailsOfElements/Get3DBoundingBoxesは全要素の
+    # 詳細ジオメトリをまとめて1回で返す設計のためレスポンス自体が大きく、
+    # DERPリレー(EC2からのTailscale直接P2P接続が確立していない環境)の
+    # 帯域が実質的なボトルネックになっている。このセッション共有・並列化
+    # 自体は既に実施済みの改善だが、残る遅さはPC側のネットワーク環境
+    # (ルーターのUPnP/NAT設定等でTailscaleの直接P2P接続を確立できるか)
+    # に依存するため、コード側でこれ以上大きく削れる余地は乏しい。
+    # 以下の2箇所の所要時間ログ(print)は、今後この処理が遅く感じられた
+    # 際に「ネットワーク(Tapir取得・敷地プロパティ取得)が遅いのか、
+    # それ以外(下のrebuild_connections/index_elements等)が遅いのか」を
+    # ログだけで切り分けられるように恒常的に残す
+    # (CLAUDE.md「可観測性の整備」が未着手だったための最小限の対応)。
+    _t_sync_start = time.monotonic()
     async with archicad_client.open_session() as session:
         all_guids = await tapir.get_all_element_guids(session=session)
         guids = all_guids if limit <= 0 else all_guids[:limit]
@@ -277,6 +294,7 @@ async def sync_from_archicad(limit: int = 50) -> dict:
             tapir.get_zone_categories(session=session),
             tapir.get_layer_names(session=session),
         )
+    print(f"[archicad_sync] Tapir取得(セッション確立+並列取得): {time.monotonic() - _t_sync_start:.2f}s", flush=True)
 
     category_name_by_guid = {
         category["attributeId"]["guid"]: category["name"] for category in zone_categories
@@ -366,7 +384,9 @@ async def sync_from_archicad(limit: int = 50) -> dict:
     # 同じ理由。
     await asyncio.to_thread(db.replace_all_elements, pending_elements)
 
+    _t_legal = time.monotonic()
     legal_conditions_synced = await _sync_legal_condition_properties(site_guids)
+    print(f"[archicad_sync] 敷地プロパティ取得: {time.monotonic() - _t_legal:.2f}s", flush=True)
 
     removed_guids = [guid for guid in previous_elements if guid not in new_guids]
     changed_or_added_guids = added_guids + changed_guids
